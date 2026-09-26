@@ -62,6 +62,11 @@ def main():
     # playback can be stopped early via the Play button (toggle)
     eng.start_playback()
     assert eng.mode == "PLAY"
+    # status bar reflects moving playback time (current/total)
+    duration = eng.player.runtime.duration
+    eng.player.t = min(1.5, duration)
+    eng._draw()  # must render the current/total time without errors
+    assert eng.player.t > 0.0
     eng._draw()
     # during playback only the Play/Stop-playing button stays enabled
     assert eng.buttons["play"].label == "Stop playing"
@@ -83,6 +88,27 @@ def main():
     eng.stop_recording()
     eng._draw()
     assert eng.buttons["record"].label == "Record"
+
+    # pause (during recording) disables everything except Stop Recording and
+    # Resume, shows "Stop Recording", and draws no transition cover
+    eng.start_recording()
+    assert eng._current_cover() == 0.0
+    eng.on_pause()  # -> PAUSING
+    eng.mode = "PAUSED"
+    eng._draw()
+    assert eng.buttons["record"].label == "Stop Recording"
+    assert eng.buttons["pause"].label == "Resume"
+    assert eng.buttons["record"].enabled is True
+    assert eng.buttons["pause"].enabled is True
+    for k in ("play", "export", "save", "load", "resolution",
+              "add_sprite", "add_sound", "add_bg", "panels"):
+        assert eng.buttons[k].enabled is False, k
+    # no transition animation while authoring
+    assert eng._current_cover() == 0.0
+    eng.stop_recording()
+    assert eng.mode == "EDIT"
+    eng._draw()
+    assert eng._current_cover() == 0.0
 
     # test new features:
     # 1. resolution change
@@ -129,6 +155,41 @@ def main():
         sp2 = eng.stage.active.sprites[-1]
         eng.stage.active.move_sprite_down(sp2)
         eng.stage.active.move_sprite_up(sp2)
+
+    # 6. asset folders: auto-load on startup + copy-on-add
+    import os as _os
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        tmp_png = tf.name
+    try:
+        # copy-on-add places a copy inside the asset folder
+        dest = C.import_into(tmp_png, C.BACKGROUNDS_DIR)
+        assert _os.path.dirname(_os.path.abspath(dest)) == \
+            _os.path.abspath(C.BACKGROUNDS_DIR)
+        assert _os.path.exists(dest)
+        # importing again from the same folder must not duplicate
+        again = C.import_into(dest, C.BACKGROUNDS_DIR)
+        assert _os.path.abspath(again) == _os.path.abspath(dest)
+    finally:
+        if _os.path.exists(tmp_png):
+            _os.remove(tmp_png)
+        if _os.path.exists(dest):
+            _os.remove(dest)
+
+    # auto-load: every file physically present in an asset folder is loaded
+    from app import config as C2
+    from app.assets_lib import Assets
+    from app.sound import SoundManager
+    sm2 = SoundManager()
+    assets2 = Assets(sm2)
+    assets2.load_images_from(C2.SPRITES_DIR)
+    assets2.load_backgrounds_from(C2.BACKGROUNDS_DIR)
+    sm2.load_all_from(C2.SOUNDS_DIR)
+    for f in _os.listdir(C2.BACKGROUNDS_DIR):
+        if f.lower().endswith(C2.IMAGE_EXTS):
+            key = _os.path.splitext(f)[0]
+            assert key in assets2.backgrounds, key
 
     eng._draw()
     pygame.quit()

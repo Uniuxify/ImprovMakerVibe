@@ -1,5 +1,6 @@
 """Global configuration for Scene Puppet."""
 import os
+import shutil
 
 # --- Window / stage geometry ---
 FRAME_W = 1280           # visible scene width
@@ -71,3 +72,28 @@ def ensure_dirs():
     for d in (ASSETS_DIR, SPRITES_DIR, SOUNDS_DIR, BACKGROUNDS_DIR,
               PROJECTS_DIR, BUILTIN_DIR, RECORDINGS_DIR):
         os.makedirs(d, exist_ok=True)
+
+
+def unique_path(directory, filename):
+    """Return a path inside `directory` for `filename` that does not exist
+    yet, appending a numeric suffix when necessary."""
+    base, ext = os.path.splitext(filename)
+    candidate = filename
+    i = 1
+    while os.path.exists(os.path.join(directory, candidate)):
+        candidate = f"{base}_{i}{ext}"
+        i += 1
+    return os.path.join(directory, candidate)
+
+
+def import_into(src, dest_dir):
+    """Copy `src` into `dest_dir`, creating a unique name if needed, and
+    return the destination path. If `src` already lives directly in
+    `dest_dir`, it is returned unchanged (avoids duplicate copies)."""
+    dest_dir = os.path.abspath(dest_dir)
+    src = os.path.abspath(src)
+    if os.path.dirname(src) == dest_dir:
+        return src
+    dest = unique_path(dest_dir, os.path.basename(src))
+    shutil.copy2(src, dest)
+    return dest

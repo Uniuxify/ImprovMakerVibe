@@ -46,6 +46,8 @@ class Engine:
         from .scene import Stage
         self.stage = Stage()
         self.assets.ensure_builtin_backgrounds()
+        # load user assets that live in the assets/ folders on startup
+        self.load_assets_from_disk()
         self.stage.active.background = self.assets.get_background(
             "gradient_sky")
         self.stage.active.bg_key = "gradient_sky"
@@ -128,6 +130,13 @@ class Engine:
             rect = pygame.Rect(x, y, w, h)
             self.buttons[key] = ui.Button(rect, label, color=col)
             x += w + 6
+
+    def load_assets_from_disk(self):
+        """Load every sprite, sound and background found in the asset
+        folders so they appear in the panels at startup."""
+        self.assets.load_images_from(C.SPRITES_DIR)
+        self.assets.load_backgrounds_from(C.BACKGROUNDS_DIR)
+        self.sm.load_all_from(C.SOUNDS_DIR)
 
     def refresh_panels(self):
         # sprites
@@ -381,6 +390,11 @@ class Engine:
     def _editable(self):
         return self.mode in (MODE_EDIT, MODE_RECORD, MODE_PAUSED)
 
+    def _in_recording_session(self):
+        """True while a recording is in progress, including pauses."""
+        return self.mode in (MODE_RECORD, MODE_PAUSING, MODE_PAUSED,
+                             MODE_RESUMING)
+
     # ---- resizing -----------------------------------------------------
     def _start_resize(self, sp, handle):
         self.resizing = sp
@@ -462,7 +476,7 @@ class Engine:
         if key == "record":
             if self.mode == MODE_EDIT:
                 self.start_recording()
-            elif self.mode == MODE_RECORD:
+            elif self._in_recording_session():
                 self.stop_recording()
         elif key == "pause":
             self.on_pause()
@@ -685,7 +699,9 @@ class Engine:
                               exts=C.IMAGE_EXTS, initialdir=C.SPRITES_DIR)
         count = 0
         for p in paths:
-            key = self.assets.load_image_file(p)
+            # copy the file into the asset folder, then load the copy
+            dest = C.import_into(p, C.SPRITES_DIR)
+            key = self.assets.load_image_file(dest)
             if key and self.mode == MODE_RECORD:
                 sp = Sprite(key, self.assets.get_image(key),
                             C.MARGIN + 200, C.MARGIN + 200)
@@ -694,27 +710,29 @@ class Engine:
             if key:
                 count += 1
         self.refresh_panels()
-        self.status = f"Loaded {count} sprite(s)."
+        self.status = f"Added {count} sprite(s)."
 
     def add_sound_dialog(self):
         paths = ui.open_files(self.screen, self.clock, "Add sounds",
                               exts=C.SOUND_EXTS, initialdir=C.SOUNDS_DIR)
         count = 0
         for p in paths:
-            if self.sm.load(p):
+            dest = C.import_into(p, C.SOUNDS_DIR)
+            if self.sm.load(dest):
                 count += 1
         self.refresh_panels()
-        self.status = f"Loaded {count} sound(s)."
+        self.status = f"Added {count} sound(s)."
 
     def add_bg_dialog(self):
         p = ui.open_file(self.screen, self.clock, "Add background",
                          exts=C.IMAGE_EXTS, initialdir=C.BACKGROUNDS_DIR)
         if not p:
             return
-        key = self.assets.load_background_file(p)
+        dest = C.import_into(p, C.BACKGROUNDS_DIR)
+        key = self.assets.load_background_file(dest)
         if key:
             self.refresh_panels()
-            self.status = f"Loaded background '{key}'."
+            self.status = f"Added background '{key}'."
 
     # ---- panel actions ------------------------------------------------
     def on_panel_action(self, action):
@@ -892,14 +910,10 @@ class Engine:
                         (fx, fy, fw, fh), 2)
 
     def _current_cover(self):
-        half = C.TRANSITION_DURATION / 2
-        if self.mode == MODE_PAUSING:
-            return min(1.0, self.trans_timer / half)
-        if self.mode == MODE_PAUSED:
-            # keep the scene visible (dimmed) so the author can rearrange
-            return 0.5
-        if self.mode == MODE_RESUMING:
-            return max(0.0, 1.0 - self.trans_timer / half)
+        # No transition overlay while authoring (recording/pausing/resuming):
+        # the transition animation is shown ONLY during playback, where the
+        # Player renders it from the recorded pause event. So nothing is
+        # drawn over the stage while building the scene.
         return 0.0
 
     def _draw_toolbar(self):
@@ -908,18 +922,25 @@ class Engine:
         # set active states / labels / enablement
         recording = self.mode == MODE_RECORD
         playing = self.mode == MODE_PLAY
-        self.buttons["record"].active = recording
+        paused_session = self.mode in (MODE_PAUSING, MODE_PAUSED,
+                                       MODE_RESUMING)
+        in_session = self._in_recording_session()
+        self.buttons["record"].active = in_session
         self.buttons["record"].toggle = True
         self.buttons["record"].label = ("Stop Recording"
-                                        if recording else "Record")
+                                        if in_session else "Record")
         self.buttons["pause"].label = ("Resume"
                                        if self.mode == MODE_PAUSED else "Pause")
         self.buttons["play"].label = "Stop playing" if playing else "Play"
         # enablement: during playback only the play/stop toggle is available;
-        # during recording Play/Export/Save/Load are blocked
+        # while paused (in a recording session) only Stop Recording and
+        # Resume are available; during recording Play/Export/Save/Load are
+        # blocked
         for key, btn in self.buttons.items():
             if playing:
                 btn.enabled = (key == "play")
+            elif paused_session:
+                btn.enabled = key in ("record", "pause")
             elif recording:
                 btn.enabled = key not in ("play", "export", "save", "load")
             else:
@@ -933,9 +954,15 @@ class Engine:
 
     def _draw_status(self):
         rect = pygame.Rect(0, C.WINDOW_H - C.STATUS_H, C.WINDOW_W, C.STATUS_H)
-        t = self.t if self.mode in (MODE_RECORD, MODE_PAUSING, MODE_PAUSED,
-                                    MODE_RESUMING) else 0.0
-        text = f"{self.status}    |    t={t:.1f}s"
+        if self.mode == MODE_PLAY and self.player.runtime is not None:
+            cur = self.player.t
+            total = self.player.runtime.duration
+            time_text = f"t={cur:.1f}/{total:.1f}s"
+        else:
+            t = self.t if self.mode in (MODE_RECORD, MODE_PAUSING,
+                                        MODE_PAUSED, MODE_RESUMING) else 0.0
+            time_text = f"t={t:.1f}s"
+        text = f"{self.status}    |    {time_text}"
         ui.draw_status(self.screen, text, rect)
         zoom_text = f"Zoom: {int(round(self.view.scale * 100))}%"
         ui.draw_label(self.screen, zoom_text, (rect.right - 110, rect.y + 5), size=14, color=C.COL_ACCENT)
