@@ -88,6 +88,11 @@ class Engine:
         self._pin_side_y = None         # "top" or "bottom"
         self.panning = False            # middle-mouse drag panning the view
         self._pan_last = (0, 0)
+        self.marquee_selecting = False
+        self.marquee_start = (0, 0)
+        self.marquee_end = (0, 0)
+        self.marquee_base = []
+        self.marquee_additive = False
         self.frame_surf = pygame.Surface((self.frame_w, self.frame_h))
 
         self._build_toolbar()
@@ -239,7 +244,8 @@ class Engine:
             self._pan_last = (sx, sy)
             return
 
-        if self.panels.visible and sx >= C.STAGE_W and not self.panning:
+        if (self.panels.visible and sx >= C.STAGE_W and not self.panning
+                and not self.marquee_selecting):
             return
 
         # mouse wheel: zoom or z-order
@@ -265,6 +271,8 @@ class Engine:
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
             wx, wy = self.view.s2w(sx, sy)
             sc = self.stage.active
+            if self.marquee_selecting:
+                return
             # 1. Flip buttons for selected sprite
             if self.selected is not None and self.selected in sc.sprites and self._editable():
                 btn_h, btn_v = self._flip_buttons(self.selected)
@@ -313,7 +321,9 @@ class Engine:
                             self.recorder.log_move(self._edit_t(), s, s.x, s.y,
                                                    force=True)
             else:
-                if not is_shift:
+                if self._editable():
+                    self._start_marquee(sx, sy, additive=is_shift)
+                elif not is_shift:
                     self.selected_sprites = []
 
         elif event.type == pygame.MOUSEMOTION:
@@ -322,6 +332,9 @@ class Engine:
                 dy = sy - self._pan_last[1]
                 self.view.pan(dx, dy)
                 self._pan_last = (sx, sy)
+                return
+            if self.marquee_selecting:
+                self.marquee_end = (sx, sy)
                 return
             wx, wy = self.view.s2w(sx, sy)
             if self.resizing is not None and self._editable():
@@ -338,6 +351,9 @@ class Engine:
             self.panning = False
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+            if self.marquee_selecting:
+                self._finish_marquee()
+                return
             if self.dragging_sprites and self._logging():
                 for s in self.dragging_sprites:
                     self.recorder.log_move(self._edit_t(), s, s.x, s.y,
@@ -490,6 +506,44 @@ class Engine:
                                     anchor_side_x=self._pin_side_x,
                                     anchor_y=self._pin_y if self._pin_side_y else None,
                                     anchor_side_y=self._pin_side_y)
+
+    # ---- marquee selection --------------------------------------------
+    def _start_marquee(self, sx, sy, additive=False):
+        self.marquee_selecting = True
+        self.marquee_start = (sx, sy)
+        self.marquee_end = (sx, sy)
+        self.marquee_additive = bool(additive)
+        self.marquee_base = list(self.selected_sprites)
+
+    def _finish_marquee(self):
+        self.marquee_selecting = False
+        sc = self.stage.active
+        base = [sp for sp in self.marquee_base if sp in sc.sprites]
+
+        x1, y1 = self.marquee_start
+        x2, y2 = self.marquee_end
+        if abs(x2 - x1) < 4 and abs(y2 - y1) < 4:
+            self.selected_sprites = base if self.marquee_additive else []
+            return
+
+        wx1, wy1 = self.view.s2w(x1, y1)
+        wx2, wy2 = self.view.s2w(x2, y2)
+        rect = pygame.Rect(
+            int(min(wx1, wx2)),
+            int(min(wy1, wy2)),
+            max(1, int(abs(wx2 - wx1))),
+            max(1, int(abs(wy2 - wy1))),
+        )
+
+        hits = [sp for sp in sc.sprites if sp.rect().colliderect(rect)]
+        if self.marquee_additive:
+            new_selection = list(base)
+            for sp in hits:
+                if sp not in new_selection:
+                    new_selection.append(sp)
+            self.selected_sprites = new_selection
+        else:
+            self.selected_sprites = hits
 
     # ---- buttons ------------------------------------------------------
     def on_button(self, key):
@@ -930,6 +984,18 @@ class Engine:
                 pygame.draw.rect(self.screen, C.COL_ACCENT if sp.flip_y else (100, 104, 120), btn_v, 1, border_radius=4)
                 ui.draw_label(self.screen, "Flip V", (btn_v.x + 8, btn_v.y + 3), size=13,
                             color=C.COL_ACCENT if sp.flip_y else C.COL_TEXT)
+
+            if self.marquee_selecting:
+                x1, y1 = self.marquee_start
+                x2, y2 = self.marquee_end
+                r = pygame.Rect(min(x1, x2), min(y1, y2),
+                                abs(x2 - x1), abs(y2 - y1))
+                if r.w > 0 and r.h > 0:
+                    fill = pygame.Surface((r.w, r.h), pygame.SRCALPHA)
+                    fill.fill((C.COL_ACCENT[0], C.COL_ACCENT[1],
+                               C.COL_ACCENT[2], 35))
+                    self.screen.blit(fill, r.topleft)
+                    pygame.draw.rect(self.screen, C.COL_ACCENT, r, 1)
 
         # frame border
         pygame.draw.rect(self.screen, C.COL_FRAME,
