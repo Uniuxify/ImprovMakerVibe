@@ -79,20 +79,30 @@ class Runtime:
     def reset(self):
         self.__init__(self.log, self.assets)
 
+    def _apply_pending_switch(self, at_t):
+        """Apply the scene switch scheduled by a pause transition once the
+        timeline reaches its midpoint (before events logged at the midpoint).
+        """
+        tr = self.transition
+        if tr and tr.get("switch_scene") and at_t >= tr["mid"]:
+            sc = self.scenes.get(tr["switch_scene"])
+            if sc is not None:
+                self.active = sc
+            tr["switch_scene"] = None
+
     def update_to(self, t):
         """Advance state to absolute time t. Returns list of sounds triggered."""
         self.triggered_sounds = []
         n = len(self.events)
         while self._idx < n and self.events[self._idx]["t"] <= t:
-            self._apply(self.events[self._idx])
+            ev = self.events[self._idx]
+            # a pause may switch scenes at its midpoint: apply the switch
+            # before any midpoint event so adds/removes land on the new scene
+            self._apply_pending_switch(ev["t"])
+            self._apply(ev)
             self._idx += 1
-        # scheduled scene switch from a pause transition
-        tr = self.transition
-        if tr and tr.get("switch_scene") and t >= tr["mid"]:
-            sc = self.scenes.get(tr["switch_scene"])
-            if sc is not None:
-                self.active = sc
-            tr["switch_scene"] = None
+        # ensure the switch still happens if no event triggered it
+        self._apply_pending_switch(t)
         self._interpolate(t)
         return self.triggered_sounds
 

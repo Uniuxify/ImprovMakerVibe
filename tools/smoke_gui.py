@@ -105,6 +105,24 @@ def main():
         assert eng.buttons[k].enabled is False, k
     # no transition animation while authoring
     assert eng._current_cover() == 0.0
+
+    # edits made while paused are logged at the pause midpoint so they appear
+    # during playback (which is what the player applies at the transition mid)
+    from app.sprite import Sprite
+    from app import config as C
+    mid = eng.pause_start_t + C.TRANSITION_DURATION / 2.0
+    n_before = len(eng.recorder.log.events)
+    key = next(iter(eng.assets.images)) if eng.assets.images else None
+    if key is not None:
+        sp = Sprite("paused_add", eng.assets.get_image(key),
+                    C.MARGIN + 60, C.MARGIN + 60, image_key=key)
+        eng.stage.active.add_sprite(sp)
+        eng.recorder.log_sprite_add(eng._edit_t(), sp)
+        added = eng.recorder.log.events[-1]
+        assert added["type"] == "sprite_add"
+        assert abs(added["t"] - mid) < 1e-6, (added["t"], mid)
+    assert eng._edit_t() == mid
+
     eng.stop_recording()
     assert eng.mode == "EDIT"
     eng._draw()

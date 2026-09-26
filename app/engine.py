@@ -252,12 +252,14 @@ class Engine:
             elif self.selected is not None and self.selected in self.stage.active.sprites and self._editable():
                 if event.y > 0:
                     self.stage.active.move_sprite_up(self.selected)
-                    if self.mode == MODE_RECORD:
-                        self.recorder.log_z_order(self.t, self.selected, "up")
+                    if self._logging():
+                        self.recorder.log_z_order(self._edit_t(),
+                                                  self.selected, "up")
                 elif event.y < 0:
                     self.stage.active.move_sprite_down(self.selected)
-                    if self.mode == MODE_RECORD:
-                        self.recorder.log_z_order(self.t, self.selected, "down")
+                    if self._logging():
+                        self.recorder.log_z_order(self._edit_t(),
+                                                  self.selected, "down")
                 return
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
@@ -268,15 +270,17 @@ class Engine:
                 btn_h, btn_v = self._flip_buttons(self.selected)
                 if btn_h.collidepoint(sx, sy):
                     self.selected.toggle_flip_h()
-                    if self.mode == MODE_RECORD:
-                        self.recorder.log_flip(self.t, self.selected,
-                                               self.selected.flip_x, self.selected.flip_y)
+                    if self._logging():
+                        self.recorder.log_flip(self._edit_t(), self.selected,
+                                               self.selected.flip_x,
+                                               self.selected.flip_y)
                     return
                 if btn_v.collidepoint(sx, sy):
                     self.selected.toggle_flip_v()
-                    if self.mode == MODE_RECORD:
-                        self.recorder.log_flip(self.t, self.selected,
-                                               self.selected.flip_x, self.selected.flip_y)
+                    if self._logging():
+                        self.recorder.log_flip(self._edit_t(), self.selected,
+                                               self.selected.flip_x,
+                                               self.selected.flip_y)
                     return
 
             # 2. Resize handles of the primary selected sprite
@@ -304,9 +308,10 @@ class Engine:
                 if hit in self.selected_sprites:
                     self.dragging_sprites = list(self.selected_sprites)
                     self.drag_offsets = {s: (wx - s.x, wy - s.y) for s in self.selected_sprites}
-                    if self.mode == MODE_RECORD:
+                    if self._logging():
                         for s in self.selected_sprites:
-                            self.recorder.log_move(self.t, s, s.x, s.y, force=True)
+                            self.recorder.log_move(self._edit_t(), s, s.x, s.y,
+                                                   force=True)
             else:
                 if not is_shift:
                     self.selected_sprites = []
@@ -326,16 +331,17 @@ class Engine:
                     ox, oy = self.drag_offsets[s]
                     s.x = wx - ox
                     s.y = wy - oy
-                    if self.mode == MODE_RECORD:
-                        self.recorder.log_move(self.t, s, s.x, s.y)
+                    if self._logging():
+                        self.recorder.log_move(self._edit_t(), s, s.x, s.y)
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 2:
             self.panning = False
 
         elif event.type == pygame.MOUSEBUTTONUP and event.button == 1:
-            if self.dragging_sprites and self.mode == MODE_RECORD:
+            if self.dragging_sprites and self._logging():
                 for s in self.dragging_sprites:
-                    self.recorder.log_move(self.t, s, s.x, s.y, force=True)
+                    self.recorder.log_move(self._edit_t(), s, s.x, s.y,
+                                           force=True)
             self.dragging_sprites = []
             self.resizing = None
             self.resize_handle = None
@@ -345,8 +351,8 @@ class Engine:
             ctrl = bool(mods & pygame.KMOD_CTRL)
             if event.key == pygame.K_DELETE:
                 for sp in list(self.selected_sprites):
-                    if self.mode == MODE_RECORD:
-                        self.recorder.log_sprite_remove(self.t, sp)
+                    if self._logging():
+                        self.recorder.log_sprite_remove(self._edit_t(), sp)
                     self.stage.active.remove_sprite(sp)
                 self.selected_sprites = []
             elif ctrl and event.key == pygame.K_c:
@@ -380,9 +386,10 @@ class Engine:
                         flip_x=d.get("flip_x", False),
                         flip_y=d.get("flip_y", False))
             self.stage.active.add_sprite(sp)
-            if self.mode == MODE_RECORD:
-                self.recorder.log_sprite_add(self.t, sp)
-                self.recorder.log_move(self.t, sp, sp.x, sp.y, force=True)
+            if self._logging():
+                self.recorder.log_sprite_add(self._edit_t(), sp)
+                self.recorder.log_move(self._edit_t(), sp, sp.x, sp.y,
+                                       force=True)
             new_sprites.append(sp)
         self.selected_sprites = new_sprites
         self.status = f"Pasted {len(new_sprites)} sprite(s)."
@@ -394,6 +401,18 @@ class Engine:
         """True while a recording is in progress, including pauses."""
         return self.mode in (MODE_RECORD, MODE_PAUSING, MODE_PAUSED,
                              MODE_RESUMING)
+
+    def _logging(self):
+        """True when edits must be written to the event log (an active
+        recording session, including pauses)."""
+        return self.recorder.recording
+
+    def _edit_t(self):
+        """Timestamp for a logged edit. While paused, edits are logged at the
+        pause midpoint so the recorded transition hides them on playback."""
+        if self.mode in (MODE_PAUSING, MODE_PAUSED, MODE_RESUMING):
+            return self.pause_start_t + C.TRANSITION_DURATION / 2.0
+        return self.t
 
     # ---- resizing -----------------------------------------------------
     def _start_resize(self, sp, handle):
@@ -463,9 +482,10 @@ class Engine:
         elif self._pin_side_y == "bottom":
             sp.y = self._pin_y - sp.h
 
-        if self.mode == MODE_RECORD:
-            self.recorder.log_move(self.t, sp, sp.x, sp.y, force=True)
-            self.recorder.log_scale(self.t, sp, sp.scale_x, sp.scale_y,
+        if self._logging():
+            self.recorder.log_move(self._edit_t(), sp, sp.x, sp.y, force=True)
+            self.recorder.log_scale(self._edit_t(), sp, sp.scale_x,
+                                    sp.scale_y,
                                     anchor_x=self._pin_x if self._pin_side_x else None,
                                     anchor_side_x=self._pin_side_x,
                                     anchor_y=self._pin_y if self._pin_side_y else None,
@@ -512,11 +532,16 @@ class Engine:
         self.status = "Recording..."
 
     def stop_recording(self):
-        # capture final positions for all sprites
+        # capture final positions for all sprites. If stopped while paused,
+        # extend the timeline past the pause transition so midpoint edits
+        # stay inside the recording.
+        end_t = self.t
+        if self.mode in (MODE_PAUSING, MODE_PAUSED, MODE_RESUMING):
+            end_t = self.pause_start_t + C.TRANSITION_DURATION
         for sc in self.stage.scenes:
             for sp in sc.sprites:
-                self.recorder.log_move(self.t, sp, sp.x, sp.y, force=True)
-        self.recorder.stop(self.t)
+                self.recorder.log_move(end_t, sp, sp.x, sp.y, force=True)
+        self.recorder.stop(end_t)
         # stop mic
         out = os.path.join(C.RECORDINGS_DIR,
                            f"rec_{int(time.time())}.wav")
@@ -702,11 +727,11 @@ class Engine:
             # copy the file into the asset folder, then load the copy
             dest = C.import_into(p, C.SPRITES_DIR)
             key = self.assets.load_image_file(dest)
-            if key and self.mode == MODE_RECORD:
+            if key and self._logging():
                 sp = Sprite(key, self.assets.get_image(key),
                             C.MARGIN + 200, C.MARGIN + 200)
                 self.stage.active.add_sprite(sp)
-                self.recorder.log_sprite_add(self.t, sp)
+                self.recorder.log_sprite_add(self._edit_t(), sp)
             if key:
                 count += 1
         self.refresh_panels()
@@ -757,22 +782,23 @@ class Engine:
                     wy - surf.get_height() / 2, image_key=key)
         self.stage.active.add_sprite(sp)
         self.selected = sp
-        if self.mode == MODE_RECORD:
-            self.recorder.log_sprite_add(self.t, sp)
-            self.recorder.log_move(self.t, sp, sp.x, sp.y, force=True)
+        if self._logging():
+            self.recorder.log_sprite_add(self._edit_t(), sp)
+            self.recorder.log_move(self._edit_t(), sp, sp.x, sp.y,
+                                   force=True)
 
     def on_item_click(self, panel, item):
         key = item["key"]
         if panel == "Sounds":
             self.sm.play(key)
-            if self.mode == MODE_RECORD:
-                self.recorder.log_sound(self.t, key)
+            if self._logging():
+                self.recorder.log_sound(self._edit_t(), key)
             self.status = f"Sound: {key}"
         elif panel == "Backgrounds":
             self.stage.active.bg_key = key
             self.stage.active.background = self.assets.get_background(key)
-            if self.mode == MODE_RECORD:
-                self.recorder.log_background(self.t, key)
+            if self._logging():
+                self.recorder.log_background(self._edit_t(), key)
             self.status = f"Background: {key}"
         elif panel == "Scenes":
             if key == "__add__":
@@ -780,7 +806,7 @@ class Engine:
                 # if recording, register the new scene in the start snapshot
                 # so it exists during playback/export
                 snap = self.recorder.log.start_state
-                if self.mode == MODE_RECORD and snap is not None:
+                if self._logging() and snap is not None:
                     snap.setdefault("scenes", []).append(sc.to_dict())
                 self.refresh_panels()
                 self.status = f"Added {sc.name}."

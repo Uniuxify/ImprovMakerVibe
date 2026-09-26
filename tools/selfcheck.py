@@ -143,6 +143,32 @@ def main():
     print(f"[check] pinned right edge drift={worst:.2f}px "
           f"-> {'OK' if ok_pin else 'FAIL'}")
 
+    # --- pause edits (add/remove at midpoint) become visible on playback ---
+    log3 = EventLog()
+    log3.start_state = {
+        "scenes": [
+            {"name": "scene1", "background": "gradient_sky", "sprites": []},
+            {"name": "scene2", "background": "gradient_sunset", "sprites": []},
+        ]
+    }
+    log3.events.append({"t": 1.0, "type": "pause", "transition": "fade",
+                        "duration": C.TRANSITION_DURATION, "scene": "scene2"})
+    # sprite added while paused -> logged at the pause midpoint (1.4s)
+    mid = 1.0 + C.TRANSITION_DURATION / 2.0
+    log3.events.append({"t": mid, "type": "sprite_add", "sprite": "hero",
+                        "image": "hero", "x": 150.0, "y": 160.0,
+                        "scale_x": 1.0, "scale_y": 1.0})
+    log3.duration = 2.0
+    rt3 = Runtime(log3, assets)
+    rt3.update_to(0.5)
+    absent_before = rt3.active.sprite_by_name("hero") is None
+    rt3.update_to(1.9)
+    present_after = (rt3.active.name == "scene2"
+                     and rt3.active.sprite_by_name("hero") is not None)
+    ok_pause_add = absent_before and present_after
+    print(f"[check] pause sprite_add: before={absent_before} "
+          f"after={present_after} -> {'OK' if ok_pause_add else 'FAIL'}")
+
     # --- export ----------------------------------------------------
     out = os.path.join(C.PROJECTS_DIR, "selftest.mp4")
     if not exporter.is_available():
@@ -156,7 +182,7 @@ def main():
           f"-> {'OK' if size > 2000 else 'FAIL'}")
 
     all_ok = (ok_interp and ok_cover and ok_scene and ok_bg and ok_scale
-              and ok_flip and ok_pin and size > 2000)
+              and ok_flip and ok_pin and ok_pause_add and size > 2000)
     print("[result]", "ALL OK" if all_ok else "SOME CHECKS FAILED")
     return 0 if all_ok else 1
 
