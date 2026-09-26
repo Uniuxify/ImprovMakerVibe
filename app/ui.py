@@ -17,6 +17,26 @@ def get_font(size=18, bold=False):
     return _font_cache[key]
 
 
+def _button_font(label, rect):
+    max_w = max(1, rect.width - 12)
+    max_h = max(1, rect.height - 6)
+    for size in (18, 16, 14, 12, 10):
+        font = get_font(size, bold=True)
+        if font.size(label)[0] <= max_w and font.get_height() <= max_h:
+            return font
+    return get_font(10, bold=True)
+
+
+def _button_text(label, font, rect):
+    max_w = max(1, rect.width - 12)
+    if font.size(label)[0] <= max_w:
+        return label
+    ellipsis = "..."
+    while label and font.size(label + ellipsis)[0] > max_w:
+        label = label[:-1]
+    return (label + ellipsis) if label else ellipsis
+
+
 class Button:
     def __init__(self, rect, label, color=None, text_color=None, toggle=False):
         self.rect = pygame.Rect(rect)
@@ -32,8 +52,9 @@ class Button:
         if not self.enabled:
             pygame.draw.rect(surf, C.COL_BUTTON_DISABLED, self.rect,
                              border_radius=6)
-            font = get_font(18, bold=True)
-            txt = font.render(self.label, True, C.COL_TEXT_DISABLED)
+            font = _button_font(self.label, self.rect)
+            txt = font.render(_button_text(self.label, font, self.rect),
+                              True, C.COL_TEXT_DISABLED)
             surf.blit(txt, txt.get_rect(center=self.rect.center))
             return
         col = self.color
@@ -45,8 +66,9 @@ class Button:
         if self.toggle and self.active:
             pygame.draw.rect(surf, (255, 255, 255), self.rect, 2,
                              border_radius=6)
-        font = get_font(18, bold=True)
-        txt = font.render(self.label, True, self.text_color)
+        font = _button_font(self.label, self.rect)
+        txt = font.render(_button_text(self.label, font, self.rect),
+                          True, self.text_color)
         surf.blit(txt, txt.get_rect(center=self.rect.center))
 
     def handle_event(self, event, mouse_pos):
