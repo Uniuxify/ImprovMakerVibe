@@ -1,0 +1,1 @@
+"""Scene Puppet - application package."""

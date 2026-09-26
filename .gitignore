@@ -1,0 +1,11 @@
+.idea/
+.venv/
+/__pycache__/
+*.py[cod]
+*$py.class
+app/__pycache__/
+/recordings/
+/projects/
+/assets/backgrounds/
+/assets/sounds/
+/assets/sprites/
