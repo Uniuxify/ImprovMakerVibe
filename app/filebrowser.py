@@ -36,6 +36,9 @@ class FileBrowser:
         self.cursor_pos = len(self.filename)
         self._cursor_timer = 0
         self._refresh()
+        if self.mode == "directory":
+            self.filename = os.path.basename(self.cwd) or self.cwd
+            self.cursor_pos = len(self.filename)
 
     # ---- data ---------------------------------------------------------
     def _refresh(self):
@@ -145,6 +148,9 @@ class FileBrowser:
         if pygame.Rect(box.x + PAD, box.y + 34, 90, 24).collidepoint(mouse):
             self.cwd = os.path.dirname(self.cwd)
             self._refresh()
+            if self.mode == "directory":
+                self.filename = os.path.basename(self.cwd) or self.cwd
+                self.cursor_pos = len(self.filename)
             return
         # action buttons
         if pygame.Rect(box.right - 200, box.bottom - 44, 90, 32).collidepoint(mouse):
@@ -169,8 +175,13 @@ class FileBrowser:
         if name == ".." or os.path.isdir(full):
             self.cwd = full
             self._refresh()
+            if self.mode == "directory":
+                self.filename = os.path.basename(self.cwd) or self.cwd
+                self.cursor_pos = len(self.filename)
             return
         # file
+        if self.mode == "directory":
+            return
         if self.multiple:
             if idx in self.selected:
                 self.selected.discard(idx)
@@ -184,6 +195,10 @@ class FileBrowser:
             self.selected = {idx}
 
     def _confirm(self):
+        if self.mode == "directory":
+            self.result = self.cwd
+            self.running = False
+            return
         if self.multiple and self.selected:
             paths = [self._full(self.entries[i]) for i in sorted(self.selected)]
             self.result = paths
@@ -278,7 +293,12 @@ class FileBrowser:
 
         cancel = pygame.Rect(box.right - 200, box.bottom - 44, 90, 32)
         accept = pygame.Rect(box.right - 104, box.bottom - 44, 92, 32)
-        ok_label = "Save" if self.mode == "save" else "Open"
+        if self.mode == "directory":
+            ok_label = "Choose"
+        elif self.mode == "save":
+            ok_label = "Save"
+        else:
+            ok_label = "Open"
         pygame.draw.rect(self.screen, C.COL_BUTTON, cancel, border_radius=6)
         ui.draw_label(self.screen, "Cancel",
                       (cancel.centerx - 24, cancel.y + 8), size=15)

@@ -5,6 +5,7 @@ import time
 import pygame
 
 from . import config as C
+from . import settings as S
 from . import transitions
 from . import exporter
 from . import project_io
@@ -41,6 +42,7 @@ class Engine:
         self.mic = MicRecorder()
         self.recorder = Recorder()
         self.view = View()
+        self.settings = S.load_settings()
 
         # stage
         from .scene import Stage
@@ -130,6 +132,7 @@ class Engine:
             ("add_sound", "+ Sound", 100, C.COL_BUTTON),
             ("add_bg", "+ Background", 130, C.COL_BUTTON),
             ("panels", "Panels", 90, C.COL_BUTTON),
+            ("settings", "Settings", 90, C.COL_BUTTON),
         ]
         for key, label, w, col in specs:
             rect = pygame.Rect(x, y, w, h)
@@ -575,6 +578,8 @@ class Engine:
             self.add_bg_dialog()
         elif key == "panels":
             self.panels.toggle()
+        elif key == "settings":
+            self.settings_dialog()
 
     def start_recording(self):
         self.t = 0.0
@@ -612,8 +617,7 @@ class Engine:
             self.pause_start_t = self.t
             self.pause_wall_start = time.perf_counter()
             self.mic.set_capturing(False)
-            self.trans_kind = C.TRANSITION_KINDS[
-                (len(self.recorder.log.events)) % len(C.TRANSITION_KINDS)]
+            self.trans_kind = self._default_transition()
             self.scene_changed_in_pause = False
             # anchor positions before pause so idle stretch is not drift
             for sc in self.stage.scenes:
@@ -772,10 +776,172 @@ class Engine:
             cancel_btn.draw(self.screen)
             pygame.display.flip()
 
+    # ---- settings -----------------------------------------------------
+    def _default_transition(self):
+        kind = self.settings.get("default_pause_transition", "curtain")
+        if kind not in C.TRANSITION_KINDS:
+            kind = "curtain"
+        return kind
+
+    def _media_initial_dir(self, fallback):
+        path = self.settings.get("media_initial_dir") or fallback
+        if os.path.isdir(path):
+            return path
+        return fallback
+
+    def settings_dialog(self):
+        box_w, box_h = 560, 300
+        box = pygame.Rect((C.WINDOW_W - box_w) // 2,
+                          (C.WINDOW_H - box_h) // 2, box_w, box_h)
+
+        path_text = self.settings.get("media_initial_dir", C.ASSETS_DIR)
+        transition = self._default_transition()
+        input_focused = False
+        cursor_pos = len(path_text)
+        cursor_timer = 0
+        error_msg = ""
+
+        path_rect = pygame.Rect(box.x + 24, box.y + 70, box_w - 140, 32)
+        browse_btn = ui.Button((path_rect.right + 8, path_rect.y, 100, 32),
+                               "Browse")
+        transition_btns = []
+        btn_w = (box_w - 48 - 16) // 3
+        for i, kind in enumerate(C.TRANSITION_KINDS):
+            label = kind.capitalize()
+            btn = ui.Button((box.x + 24 + i * (btn_w + 8), box.y + 150,
+                             btn_w, 36), label, toggle=True)
+            btn.active = (kind == transition)
+            transition_btns.append((btn, kind))
+
+        save_btn = ui.Button((box.right - 184, box.bottom - 44, 80, 32), "Save")
+        cancel_btn = ui.Button((box.right - 96, box.bottom - 44, 80, 32),
+                               "Cancel")
+
+        dialog_running = True
+        while dialog_running:
+            self.clock.tick(60)
+            mouse = pygame.mouse.get_pos()
+            cursor_timer = (cursor_timer + 1) % 60
+
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    dialog_running = False
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
+                    dialog_running = False
+                elif save_btn.handle_event(event, mouse):
+                    input_focused = False
+                    clean_path = path_text.strip()
+                    if not clean_path or not os.path.isdir(clean_path):
+                        error_msg = "Folder does not exist"
+                        continue
+                    saved = S.save_settings({
+                        "media_initial_dir": os.path.abspath(clean_path),
+                        "default_pause_transition": transition,
+                    })
+                    self.settings = saved
+                    path_text = saved["media_initial_dir"]
+                    cursor_pos = len(path_text)
+                    self.status = "Settings saved."
+                    dialog_running = False
+                elif cancel_btn.handle_event(event, mouse):
+                    input_focused = False
+                    dialog_running = False
+                elif browse_btn.handle_event(event, mouse):
+                    input_focused = False
+                    chosen = ui.choose_directory(
+                        self.screen, self.clock,
+                        "Choose initial media folder",
+                        initialdir=path_text if os.path.isdir(path_text) else C.ASSETS_DIR)
+                    if chosen:
+                        path_text = chosen
+                        cursor_pos = len(path_text)
+                        error_msg = ""
+                else:
+                    for btn, kind in transition_btns:
+                        if btn.handle_event(event, mouse):
+                            input_focused = False
+                            transition = kind
+                            for b, k in transition_btns:
+                                b.active = (k == transition)
+                            break
+                    if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                        input_focused = path_rect.collidepoint(event.pos)
+                        if input_focused:
+                            cursor_pos = len(path_text)
+                    elif event.type == pygame.KEYDOWN and input_focused:
+                        if event.key == pygame.K_BACKSPACE:
+                            if cursor_pos > 0:
+                                path_text = (path_text[:cursor_pos - 1] +
+                                             path_text[cursor_pos:])
+                                cursor_pos -= 1
+                        elif event.key == pygame.K_DELETE:
+                            if cursor_pos < len(path_text):
+                                path_text = (path_text[:cursor_pos] +
+                                             path_text[cursor_pos + 1:])
+                        elif event.key == pygame.K_LEFT:
+                            cursor_pos = max(0, cursor_pos - 1)
+                        elif event.key == pygame.K_RIGHT:
+                            cursor_pos = min(len(path_text), cursor_pos)
+                        elif event.key == pygame.K_HOME:
+                            cursor_pos = 0
+                        elif event.key == pygame.K_END:
+                            cursor_pos = len(path_text)
+                        elif event.unicode and event.unicode.isprintable():
+                            path_text = (path_text[:cursor_pos] +
+                                         event.unicode +
+                                         path_text[cursor_pos:])
+                            cursor_pos += len(event.unicode)
+
+            dim = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
+            dim.fill((0, 0, 0, 150))
+            self.screen.blit(dim, (0, 0))
+
+            pygame.draw.rect(self.screen, C.COL_PANEL, box, border_radius=8)
+            pygame.draw.rect(self.screen, C.COL_ACCENT, box, 2,
+                             border_radius=8)
+            ui.draw_label(self.screen, "Settings", (box.x + 24, box.y + 16),
+                          size=18, bold=True)
+            ui.draw_label(self.screen, "Initial media folder",
+                          (box.x + 24, box.y + 48), size=15)
+
+            pygame.draw.rect(self.screen, (28, 28, 36), path_rect,
+                             border_radius=5)
+            border_col = C.COL_ACCENT if input_focused else C.COL_BUTTON
+            pygame.draw.rect(self.screen, border_col, path_rect,
+                             2 if input_focused else 1, border_radius=5)
+            font = ui.get_font(14)
+            clip = self.screen.get_clip()
+            self.screen.set_clip(path_rect)
+            text_surf = font.render(path_text, True, C.COL_TEXT)
+            self.screen.blit(text_surf, (path_rect.x + 8, path_rect.y + 7))
+            if input_focused and cursor_timer < 30:
+                cursor_x = path_rect.x + 8 + font.size(path_text[:cursor_pos])[0]
+                pygame.draw.line(self.screen, C.COL_ACCENT,
+                                 (cursor_x, path_rect.y + 6),
+                                 (cursor_x, path_rect.bottom - 7), 2)
+            self.screen.set_clip(clip)
+
+            browse_btn.draw(self.screen)
+
+            ui.draw_label(self.screen, "Default pause transition",
+                          (box.x + 24, box.y + 128), size=15)
+            for btn, _ in transition_btns:
+                btn.draw(self.screen)
+
+            if error_msg:
+                ui.draw_label(self.screen, error_msg,
+                              (box.x + 24, box.bottom - 78), size=14,
+                              color=(230, 120, 120))
+
+            save_btn.draw(self.screen)
+            cancel_btn.draw(self.screen)
+            pygame.display.flip()
+
     # ---- asset additions ---------------------------------------------
     def add_sprite_dialog(self):
         paths = ui.open_files(self.screen, self.clock, "Add sprite images",
-                              exts=C.IMAGE_EXTS, initialdir=C.SPRITES_DIR)
+                              exts=C.IMAGE_EXTS,
+                              initialdir=self._media_initial_dir(C.SPRITES_DIR))
         count = 0
         for p in paths:
             # copy the file into the asset folder, then load the copy
@@ -793,7 +959,8 @@ class Engine:
 
     def add_sound_dialog(self):
         paths = ui.open_files(self.screen, self.clock, "Add sounds",
-                              exts=C.SOUND_EXTS, initialdir=C.SOUNDS_DIR)
+                              exts=C.SOUND_EXTS,
+                              initialdir=self._media_initial_dir(C.SOUNDS_DIR))
         count = 0
         for p in paths:
             dest = C.import_into(p, C.SOUNDS_DIR)
@@ -804,7 +971,8 @@ class Engine:
 
     def add_bg_dialog(self):
         p = ui.open_file(self.screen, self.clock, "Add background",
-                         exts=C.IMAGE_EXTS, initialdir=C.BACKGROUNDS_DIR)
+                         exts=C.IMAGE_EXTS,
+                         initialdir=self._media_initial_dir(C.BACKGROUNDS_DIR))
         if not p:
             return
         dest = C.import_into(p, C.BACKGROUNDS_DIR)
@@ -1034,7 +1202,8 @@ class Engine:
             elif paused_session:
                 btn.enabled = key in ("record", "pause")
             elif recording:
-                btn.enabled = key not in ("play", "export", "save", "load")
+                btn.enabled = key not in ("play", "export", "save", "load",
+                                          "settings")
             else:
                 btn.enabled = True
         for btn in self.buttons.values():

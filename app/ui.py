@@ -118,3 +118,10 @@ def save_file(screen, clock, title, exts=None, initialdir=None,
     fb = FileBrowser(screen, clock, title, mode="save", exts=exts,
                      initialdir=initialdir, initialfile=initialfile)
     return fb.run()
+
+
+def choose_directory(screen, clock, title, initialdir=None):
+    from .filebrowser import FileBrowser
+    fb = FileBrowser(screen, clock, title, mode="directory",
+                     initialdir=initialdir)
+    return fb.run()
