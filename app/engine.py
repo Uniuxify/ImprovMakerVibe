@@ -55,9 +55,18 @@ class Engine:
         self.stage.active.bg_key = "gradient_sky"
 
         # panels
-        panel_rect = pygame.Rect(C.STAGE_W, C.UI_TOP_H, C.PANEL_W,
+        max_panel_w = C.max_panel_width(C.WINDOW_W)
+        try:
+            self.panel_width = int(self.settings.get("panel_width", C.PANEL_W))
+        except (TypeError, ValueError):
+            self.panel_width = C.PANEL_W
+        self.panel_width = max(C.PANEL_W, min(max_panel_w, self.panel_width))
+        self.stage_w = C.WINDOW_W - self.panel_width
+        panel_rect = pygame.Rect(self.stage_w, C.UI_TOP_H, self.panel_width,
                                  C.STAGE_H)
-        self.panels = PanelManager(panel_rect)
+        self.panels = PanelManager(panel_rect, min_width=C.PANEL_W,
+                                   max_width=max_panel_w)
+        self._update_stage_width()
 
         # playback
         self.player = Player(self.sm, self.assets)
@@ -139,6 +148,29 @@ class Engine:
             self.buttons[key] = ui.Button(rect, label, color=col)
             x += w + 6
 
+    def _effective_stage_width(self):
+        if self.panels.visible:
+            return C.WINDOW_W - self.panel_width
+        return C.WINDOW_W
+
+    def _update_stage_width(self):
+        self.stage_w = self._effective_stage_width()
+        self.view.set_stage_size(self.stage_w, C.STAGE_H)
+        self._clamp_view_to_stage()
+
+    def _clamp_view_to_stage(self):
+        fw = self.view.frame_w * self.view.scale
+        if self.view.frame_x + fw > self.stage_w:
+            self.view.frame_x = self.stage_w - fw
+
+    def _set_panel_width(self, width):
+        width = max(C.PANEL_W, min(self.panels.max_width, int(width)))
+        if width == self.panel_width:
+            return
+        self.panel_width = width
+        self.panels.set_width(self.panel_width)
+        self._update_stage_width()
+
     def load_assets_from_disk(self):
         """Load every sprite, sound and background found in the asset
         folders so they appear in the panels at startup."""
@@ -147,32 +179,35 @@ class Engine:
         self.sm.load_all_from(C.SOUNDS_DIR)
 
     def refresh_panels(self):
+        icon = C.PANEL_ICON_SIZE
+
         # sprites
         sp_items = []
-        for key, surf in self.assets.images.items():
-            thumb = pygame.transform.smoothscale(surf, (THUMB, THUMB))
+        for key in sorted(self.assets.images.keys()):
+            surf = self.assets.images[key]
+            thumb = pygame.transform.smoothscale(surf, (icon, icon))
             sp_items.append({"key": key, "label": key, "thumb": thumb})
-        self.panels.panels["Sprites"].set_items(sp_items)
+        self.panels.set_items("Sprites", sp_items)
 
         # sounds
         snd_items = [{"key": n, "label": n, "thumb": None}
                      for n in sorted(self.sm.sounds.keys())]
-        self.panels.panels["Sounds"].set_items(snd_items)
+        self.panels.set_items("Sounds", snd_items)
 
         # backgrounds
         bg_items = []
         for key in sorted(self.assets.backgrounds.keys()):
             surf = self.assets.backgrounds[key]
-            thumb = pygame.transform.smoothscale(surf, (THUMB, THUMB))
+            thumb = pygame.transform.smoothscale(surf, (icon, icon))
             bg_items.append({"key": key, "label": key, "thumb": thumb})
-        self.panels.panels["Backgrounds"].set_items(bg_items)
+        self.panels.set_items("Backgrounds", bg_items)
 
         # scenes
         sc_items = [{"key": s.name, "label": s.name, "thumb": None}
                     for s in self.stage.scenes]
         sc_items.append({"key": "__add__", "label": "+ New scene",
                          "thumb": None})
-        self.panels.panels["Scenes"].set_items(sc_items)
+        self.panels.set_items("Scenes", sc_items)
 
     # ---- main loop ----------------------------------------------------
     def run(self):
@@ -247,7 +282,7 @@ class Engine:
             self._pan_last = (sx, sy)
             return
 
-        if (self.panels.visible and sx >= C.STAGE_W and not self.panning
+        if (self.panels.visible and sx >= self.stage_w and not self.panning
                 and not self.marquee_selecting):
             return
 
@@ -578,6 +613,7 @@ class Engine:
             self.add_bg_dialog()
         elif key == "panels":
             self.panels.toggle()
+            self._update_stage_width()
         elif key == "settings":
             self.settings_dialog()
 
@@ -837,6 +873,7 @@ class Engine:
                     saved = S.save_settings({
                         "media_initial_dir": os.path.abspath(clean_path),
                         "default_pause_transition": transition,
+                        "panel_width": self.panel_width,
                     })
                     self.settings = saved
                     path_text = saved["media_initial_dir"]
@@ -990,12 +1027,18 @@ class Engine:
         elif kind == "item":
             _, panel, item = action
             self.on_item_click(panel, item)
+        elif kind == "panel_resize":
+            self._set_panel_width(action[1])
+        elif kind == "panel_resize_end":
+            self._set_panel_width(action[1])
+            self.settings["panel_width"] = self.panel_width
+            self.settings = S.save_settings(self.settings)
 
     def drop_sprite(self, item, pos):
         if not self._editable():
             return
         sx, sy = pos
-        if sx >= C.STAGE_W:
+        if sx >= self.stage_w:
             return
         key = item["key"]
         surf = self.assets.get_image(key)
@@ -1082,7 +1125,7 @@ class Engine:
 
 
     def _draw_stage(self):
-        stage_rect = pygame.Rect(0, C.UI_TOP_H, C.STAGE_W, C.STAGE_H)
+        stage_rect = pygame.Rect(0, C.UI_TOP_H, self.stage_w, C.STAGE_H)
         pygame.draw.rect(self.screen, C.COL_BUFFER, stage_rect)
 
         fx, fy, fw, fh = self.view.frame_rect_screen()

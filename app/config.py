@@ -13,11 +13,29 @@ UI_TOP_H = 48            # top toolbar height
 STATUS_H = 26            # bottom status bar height
 PEEK = 90                # how much buffer zone is shown around the frame
 PANEL_W = 230            # slide-out panel width
+PANEL_MIN_W = PANEL_W
+PANEL_RESIZE_GRAB = 8
+PANEL_MAX_RATIO = 0.6
+MIN_STAGE_W = 600
+
+PANEL_ICON_SIZE = 64
+PANEL_GRID_PADDING = 10
+PANEL_GRID_MIN_GAP = 8
+PANEL_GRID_MAX_COLUMNS = 16
+PANEL_GRID_ROW_H = PANEL_ICON_SIZE + 16
 
 STAGE_W = FRAME_W + PEEK * 2
 STAGE_H = FRAME_H + PEEK * 2
 WINDOW_W = STAGE_W + PANEL_W
 WINDOW_H = UI_TOP_H + STAGE_H + STATUS_H
+
+
+def max_panel_width(window_w=WINDOW_W):
+    """Maximum right-panel width while keeping a usable stage area."""
+    return max(
+        PANEL_MIN_W,
+        min(int(window_w * PANEL_MAX_RATIO), window_w - MIN_STAGE_W),
+    )
 
 FPS = 30
 

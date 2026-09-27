@@ -209,6 +209,24 @@ def main():
             key = _os.path.splitext(f)[0]
             assert key in assets2.backgrounds, key
 
+    # right panel resize + adaptive icon grid
+    from app import config as C
+    assert eng.panels._grid_columns(C.PANEL_W) == 3
+    assert eng.panels._grid_columns(C.PANEL_W * 2) == 6
+    assert eng.panels._grid_gap(3, C.PANEL_W) >= C.PANEL_GRID_MIN_GAP
+    assert eng.panels._grid_gap(6, C.PANEL_W * 2) >= C.PANEL_GRID_MIN_GAP
+
+    old_width = eng.panel_width
+    new_width = min(eng.panels.max_width, old_width + 120)
+    eng._set_panel_width(new_width)
+    assert eng.panel_width == new_width
+    assert eng.stage_w == C.WINDOW_W - eng.panel_width
+    assert eng.panels.area.x == eng.stage_w
+    eng._draw()
+    eng._set_panel_width(old_width)
+    assert eng.panel_width == old_width
+    assert eng.stage_w == C.WINDOW_W - old_width
+
     eng._draw()
     pygame.quit()
     print("[smoke] events:", len(eng.recorder.log.events))

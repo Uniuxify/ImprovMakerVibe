@@ -11,6 +11,8 @@ class View:
     def __init__(self):
         self.frame_w = C.FRAME_W
         self.frame_h = C.FRAME_H
+        self.stage_w = C.STAGE_W
+        self.stage_h = C.STAGE_H
         self.scale = 1.0
         # Screen position of the top-left corner of the visible frame.
         self.frame_x = C.PEEK
@@ -19,6 +21,10 @@ class View:
     def set_frame_size(self, w, h):
         self.frame_w = int(w)
         self.frame_h = int(h)
+
+    def set_stage_size(self, w, h):
+        self.stage_w = int(w)
+        self.stage_h = int(h)
 
     def zoom(self, factor, mouse_sx, mouse_sy):
         old_scale = self.scale
@@ -32,8 +38,8 @@ class View:
 
     def reset_view(self):
         self.scale = 1.0
-        self.frame_x = max(10.0, (C.STAGE_W - self.frame_w * self.scale) / 2.0)
-        self.frame_y = max(float(C.UI_TOP_H + 10), C.UI_TOP_H + (C.STAGE_H - self.frame_h * self.scale) / 2.0)
+        self.frame_x = max(10.0, (self.stage_w - self.frame_w * self.scale) / 2.0)
+        self.frame_y = max(float(C.UI_TOP_H + 10), C.UI_TOP_H + (self.stage_h - self.frame_h * self.scale) / 2.0)
 
     def pan(self, dx, dy):
         """Shift the view by a screen-space delta (used by middle-drag)."""
@@ -55,10 +61,10 @@ class View:
                 self.frame_w * self.scale, self.frame_h * self.scale)
 
     def stage_rect(self):
-        return (0, C.UI_TOP_H, C.STAGE_W, C.STAGE_H)
+        return (0, C.UI_TOP_H, self.stage_w, self.stage_h)
 
     def in_stage(self, sx, sy):
-        return (0 <= sx < C.STAGE_W and C.UI_TOP_H <= sy < C.UI_TOP_H + C.STAGE_H)
+        return (0 <= sx < self.stage_w and C.UI_TOP_H <= sy < C.UI_TOP_H + self.stage_h)
 
     def in_frame(self, wx, wy):
         return (C.MARGIN <= wx <= C.MARGIN + self.frame_w and

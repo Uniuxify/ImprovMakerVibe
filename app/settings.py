@@ -9,6 +9,7 @@ SETTINGS_PATH = os.path.join(C.ROOT, "settings.json")
 DEFAULTS = {
     "media_initial_dir": C.ASSETS_DIR,
     "default_pause_transition": "curtain",
+    "panel_width": C.PANEL_W,
 }
 
 
@@ -28,6 +29,12 @@ def _validate(settings):
     if not isinstance(path, str) or not path or not os.path.isdir(path):
         path = DEFAULTS["media_initial_dir"]
     data["media_initial_dir"] = os.path.abspath(path)
+
+    try:
+        panel_width = int(data.get("panel_width", DEFAULTS["panel_width"]))
+    except (TypeError, ValueError):
+        panel_width = DEFAULTS["panel_width"]
+    data["panel_width"] = max(C.PANEL_MIN_W, panel_width)
 
     return data
 
