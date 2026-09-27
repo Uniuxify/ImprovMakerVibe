@@ -216,6 +216,10 @@ def main():
     assert eng.panels._grid_gap(3, C.PANEL_W) >= C.PANEL_GRID_MIN_GAP
     assert eng.panels._grid_gap(6, C.PANEL_W * 2) >= C.PANEL_GRID_MIN_GAP
 
+    assert isinstance(eng.settings["fullscreen"], bool)
+    assert eng.window_w >= C.MIN_WINDOW_W
+    assert eng.window_h >= C.MIN_WINDOW_H
+
     old_width = eng.panel_width
     new_width = min(eng.panels.max_width, old_width + 120)
     eng._set_panel_width(new_width)

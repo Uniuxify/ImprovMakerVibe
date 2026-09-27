@@ -10,6 +10,9 @@ DEFAULTS = {
     "media_initial_dir": C.ASSETS_DIR,
     "default_pause_transition": "curtain",
     "panel_width": C.PANEL_W,
+    "fullscreen": False,
+    "window_width": C.WINDOW_W,
+    "window_height": C.WINDOW_H,
 }
 
 
@@ -35,6 +38,23 @@ def _validate(settings):
     except (TypeError, ValueError):
         panel_width = DEFAULTS["panel_width"]
     data["panel_width"] = max(C.PANEL_MIN_W, panel_width)
+
+    fullscreen = data.get("fullscreen", DEFAULTS["fullscreen"])
+    if isinstance(fullscreen, str):
+        fullscreen = fullscreen.strip().lower() in ("1", "true", "yes", "on")
+    data["fullscreen"] = bool(fullscreen)
+
+    try:
+        window_width = int(data.get("window_width", DEFAULTS["window_width"]))
+    except (TypeError, ValueError):
+        window_width = DEFAULTS["window_width"]
+    data["window_width"] = max(C.MIN_WINDOW_W, window_width)
+
+    try:
+        window_height = int(data.get("window_height", DEFAULTS["window_height"]))
+    except (TypeError, ValueError):
+        window_height = DEFAULTS["window_height"]
+    data["window_height"] = max(C.MIN_WINDOW_H, window_height)
 
     return data
 

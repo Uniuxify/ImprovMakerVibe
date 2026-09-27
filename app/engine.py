@@ -33,7 +33,26 @@ class Engine:
     def __init__(self):
         pygame.init()
         C.ensure_dirs()
-        self.screen = pygame.display.set_mode((C.WINDOW_W, C.WINDOW_H))
+        self.settings = S.load_settings()
+        self.fullscreen = bool(self.settings.get("fullscreen", False))
+        try:
+            window_w = int(self.settings.get("window_width", C.WINDOW_W))
+        except (TypeError, ValueError):
+            window_w = C.WINDOW_W
+        try:
+            window_h = int(self.settings.get("window_height", C.WINDOW_H))
+        except (TypeError, ValueError):
+            window_h = C.WINDOW_H
+        window_w = max(C.MIN_WINDOW_W, window_w)
+        window_h = max(C.MIN_WINDOW_H, window_h)
+        self.windowed_size = (window_w, window_h)
+        if self.fullscreen:
+            self.window_w, self.window_h = self._desktop_size()
+        else:
+            self.window_w, self.window_h = self.windowed_size
+        C.WINDOW_W, C.WINDOW_H = self.window_w, self.window_h
+        self.screen = self._set_display_mode((self.window_w, self.window_h),
+                                             self._window_flags())
         pygame.display.set_caption("Scene Puppet")
         self.clock = pygame.time.Clock()
 
@@ -42,7 +61,6 @@ class Engine:
         self.mic = MicRecorder()
         self.recorder = Recorder()
         self.view = View()
-        self.settings = S.load_settings()
 
         # stage
         from .scene import Stage
@@ -171,6 +189,80 @@ class Engine:
         self.panels.set_width(self.panel_width)
         self._update_stage_width()
 
+    def _desktop_size(self):
+        try:
+            sizes = pygame.display.get_desktop_sizes()
+            if sizes:
+                return (int(sizes[0][0]), int(sizes[0][1]))
+        except Exception:
+            pass
+        try:
+            info = pygame.display.Info()
+            w = int(info.current_w or C.WINDOW_W)
+            h = int(info.current_h or C.WINDOW_H)
+            return (max(C.MIN_WINDOW_W, w), max(C.MIN_WINDOW_H, h))
+        except Exception:
+            return (C.WINDOW_W, C.WINDOW_H)
+
+    def _window_flags(self):
+        if self.fullscreen:
+            return pygame.FULLSCREEN
+        return pygame.RESIZABLE
+
+    def _set_display_mode(self, size, flags):
+        try:
+            return pygame.display.set_mode(size, flags)
+        except pygame.error:
+            return pygame.display.set_mode(size, 0)
+
+    def _update_panel_bounds(self):
+        if not hasattr(self, "panels"):
+            return
+        self.panels._right = C.WINDOW_W
+        self.panels.max_width = C.max_panel_width(C.WINDOW_W)
+        self.panel_width = max(C.PANEL_W,
+                               min(self.panels.max_width, self.panel_width))
+        self.panels.set_width(self.panel_width)
+
+    def _on_window_resize(self, w, h):
+        if self.fullscreen:
+            return
+        w = max(C.MIN_WINDOW_W, int(w))
+        h = max(C.MIN_WINDOW_H, int(h))
+        if (w, h) == (self.window_w, self.window_h):
+            return
+        self.window_w, self.window_h = w, h
+        self.windowed_size = (w, h)
+        C.WINDOW_W, C.WINDOW_H = w, h
+        self.screen = self._set_display_mode((w, h), self._window_flags())
+        self._update_panel_bounds()
+        self._update_stage_width()
+
+    def _apply_fullscreen(self, fullscreen):
+        fullscreen = bool(fullscreen)
+        if fullscreen == self.fullscreen:
+            return
+
+        if fullscreen:
+            if not self.windowed_size:
+                self.windowed_size = (self.window_w, self.window_h)
+            w, h = self._desktop_size()
+            self.fullscreen = True
+            self.window_w, self.window_h = w, h
+            C.WINDOW_W, C.WINDOW_H = w, h
+            self.screen = self._set_display_mode((w, h), self._window_flags())
+        else:
+            w, h = self.windowed_size or (C.WINDOW_W, C.WINDOW_H)
+            w = max(C.MIN_WINDOW_W, int(w))
+            h = max(C.MIN_WINDOW_H, int(h))
+            self.fullscreen = False
+            self.window_w, self.window_h = w, h
+            C.WINDOW_W, C.WINDOW_H = w, h
+            self.screen = self._set_display_mode((w, h), self._window_flags())
+
+        self._update_panel_bounds()
+        self._update_stage_width()
+
     def load_assets_from_disk(self):
         """Load every sprite, sound and background found in the asset
         folders so they appear in the panels at startup."""
@@ -220,6 +312,8 @@ class Engine:
                     running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     running = False
+                elif event.type == pygame.VIDEORESIZE:
+                    self._on_window_resize(event.w, event.h)
                 else:
                     self.handle_event(event, mouse_pos)
             self.update(dt)
@@ -832,6 +926,8 @@ class Engine:
 
         path_text = self.settings.get("media_initial_dir", C.ASSETS_DIR)
         transition = self._default_transition()
+        fullscreen = bool(self.settings.get("fullscreen", False))
+        pending_fullscreen = None
         input_focused = False
         cursor_pos = len(path_text)
         cursor_timer = 0
@@ -848,6 +944,10 @@ class Engine:
                              btn_w, 36), label, toggle=True)
             btn.active = (kind == transition)
             transition_btns.append((btn, kind))
+
+        fullscreen_btn = ui.Button((box.x + 24, box.y + 200, 180, 32),
+                                   "На весь экран", toggle=True)
+        fullscreen_btn.active = fullscreen
 
         save_btn = ui.Button((box.right - 184, box.bottom - 44, 80, 32), "Save")
         cancel_btn = ui.Button((box.right - 96, box.bottom - 44, 80, 32),
@@ -870,15 +970,22 @@ class Engine:
                     if not clean_path or not os.path.isdir(clean_path):
                         error_msg = "Folder does not exist"
                         continue
+                    window_width, window_height = self.windowed_size or (
+                        self.window_w, self.window_h)
                     saved = S.save_settings({
                         "media_initial_dir": os.path.abspath(clean_path),
                         "default_pause_transition": transition,
                         "panel_width": self.panel_width,
+                        "fullscreen": fullscreen,
+                        "window_width": window_width,
+                        "window_height": window_height,
                     })
                     self.settings = saved
                     path_text = saved["media_initial_dir"]
                     cursor_pos = len(path_text)
                     self.status = "Settings saved."
+                    if fullscreen != self.fullscreen:
+                        pending_fullscreen = fullscreen
                     dialog_running = False
                 elif cancel_btn.handle_event(event, mouse):
                     input_focused = False
@@ -893,6 +1000,10 @@ class Engine:
                         path_text = chosen
                         cursor_pos = len(path_text)
                         error_msg = ""
+                elif fullscreen_btn.handle_event(event, mouse):
+                    input_focused = False
+                    fullscreen = not fullscreen
+                    fullscreen_btn.active = fullscreen
                 else:
                     for btn, kind in transition_btns:
                         if btn.handle_event(event, mouse):
@@ -964,15 +1075,19 @@ class Engine:
                           (box.x + 24, box.y + 128), size=15)
             for btn, _ in transition_btns:
                 btn.draw(self.screen)
+            fullscreen_btn.draw(self.screen)
 
             if error_msg:
                 ui.draw_label(self.screen, error_msg,
-                              (box.x + 24, box.bottom - 78), size=14,
+                              (box.x + 24, box.bottom - 64), size=14,
                               color=(230, 120, 120))
 
             save_btn.draw(self.screen)
             cancel_btn.draw(self.screen)
             pygame.display.flip()
+
+        if pending_fullscreen is not None:
+            self._apply_fullscreen(pending_fullscreen)
 
     # ---- asset additions ---------------------------------------------
     def add_sprite_dialog(self):
@@ -1031,7 +1146,11 @@ class Engine:
             self._set_panel_width(action[1])
         elif kind == "panel_resize_end":
             self._set_panel_width(action[1])
+            window_width, window_height = self.windowed_size or (
+                self.window_w, self.window_h)
             self.settings["panel_width"] = self.panel_width
+            self.settings["window_width"] = window_width
+            self.settings["window_height"] = window_height
             self.settings = S.save_settings(self.settings)
 
     def drop_sprite(self, item, pos):
