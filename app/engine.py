@@ -79,12 +79,13 @@ class Engine:
         except (TypeError, ValueError):
             self.panel_width = C.PANEL_W
         self.panel_width = max(C.PANEL_W, min(max_panel_w, self.panel_width))
-        self.stage_w = C.WINDOW_W - self.panel_width
-        panel_rect = pygame.Rect(self.stage_w, C.UI_TOP_H, self.panel_width,
-                                 C.STAGE_H)
+        self.stage_w = C.WINDOW_W
+        self.stage_h = C.stage_height(self.window_h)
+        panel_rect = pygame.Rect(C.WINDOW_W - self.panel_width,
+                                 C.UI_TOP_H, self.panel_width, self.stage_h)
         self.panels = PanelManager(panel_rect, min_width=C.PANEL_W,
                                    max_width=max_panel_w)
-        self._update_stage_width()
+        self._update_layout()
 
         # playback
         self.player = Player(self.sm, self.assets)
@@ -167,27 +168,37 @@ class Engine:
             x += w + 6
 
     def _effective_stage_width(self):
-        if self.panels.visible:
-            return C.WINDOW_W - self.panel_width
         return C.WINDOW_W
 
-    def _update_stage_width(self):
+    def _point_in_panel(self, sx, sy):
+        if not self.panels.visible:
+            return False
+        pos = (int(sx), int(sy))
+        return (self.panels.area.collidepoint(pos) or
+                self.panels._resize_rect().collidepoint(pos))
+
+    def _update_layout(self):
+        self.stage_h = C.stage_height(C.WINDOW_H)
+        self._update_panel_bounds()
         self.stage_w = self._effective_stage_width()
-        self.view.set_stage_size(self.stage_w, C.STAGE_H)
+        self.view.set_stage_size(self.stage_w, self.stage_h)
         self._clamp_view_to_stage()
+
+    def _update_stage_width(self):
+        self._update_layout()
 
     def _clamp_view_to_stage(self):
         fw = self.view.frame_w * self.view.scale
+        fh = self.view.frame_h * self.view.scale
         if self.view.frame_x + fw > self.stage_w:
             self.view.frame_x = self.stage_w - fw
+        if self.view.frame_y + fh > C.UI_TOP_H + self.stage_h:
+            self.view.frame_y = C.UI_TOP_H + self.stage_h - fh
 
     def _set_panel_width(self, width):
         width = max(C.PANEL_W, min(self.panels.max_width, int(width)))
-        if width == self.panel_width:
-            return
         self.panel_width = width
-        self.panels.set_width(self.panel_width)
-        self._update_stage_width()
+        self._update_layout()
 
     def _desktop_size(self):
         try:
@@ -218,11 +229,11 @@ class Engine:
     def _update_panel_bounds(self):
         if not hasattr(self, "panels"):
             return
-        self.panels._right = C.WINDOW_W
         self.panels.max_width = C.max_panel_width(C.WINDOW_W)
         self.panel_width = max(C.PANEL_W,
                                min(self.panels.max_width, self.panel_width))
         self.panels.set_width(self.panel_width)
+        self.panels.set_bounds(right=C.WINDOW_W, height=self.stage_h)
 
     def _on_window_resize(self, w, h):
         if self.fullscreen:
@@ -235,8 +246,7 @@ class Engine:
         self.windowed_size = (w, h)
         C.WINDOW_W, C.WINDOW_H = w, h
         self.screen = self._set_display_mode((w, h), self._window_flags())
-        self._update_panel_bounds()
-        self._update_stage_width()
+        self._update_layout()
 
     def _apply_fullscreen(self, fullscreen):
         fullscreen = bool(fullscreen)
@@ -260,8 +270,7 @@ class Engine:
             C.WINDOW_W, C.WINDOW_H = w, h
             self.screen = self._set_display_mode((w, h), self._window_flags())
 
-        self._update_panel_bounds()
-        self._update_stage_width()
+        self._update_layout()
 
     def load_assets_from_disk(self):
         """Load every sprite, sound and background found in the asset
@@ -372,11 +381,12 @@ class Engine:
         # middle mouse button: pan the view (allowed anywhere on the stage,
         # and continues even if the cursor drifts over the panel area)
         if event.type == pygame.MOUSEBUTTONDOWN and event.button == 2:
-            self.panning = True
-            self._pan_last = (sx, sy)
+            if not self._point_in_panel(sx, sy):
+                self.panning = True
+                self._pan_last = (sx, sy)
             return
 
-        if (self.panels.visible and sx >= self.stage_w and not self.panning
+        if (self._point_in_panel(sx, sy) and not self.panning
                 and not self.marquee_selecting):
             return
 
@@ -707,7 +717,7 @@ class Engine:
             self.add_bg_dialog()
         elif key == "panels":
             self.panels.toggle()
-            self._update_stage_width()
+            self._update_layout()
         elif key == "settings":
             self.settings_dialog()
 
@@ -1157,7 +1167,7 @@ class Engine:
         if not self._editable():
             return
         sx, sy = pos
-        if sx >= self.stage_w:
+        if self._point_in_panel(sx, sy):
             return
         key = item["key"]
         surf = self.assets.get_image(key)
@@ -1244,7 +1254,7 @@ class Engine:
 
 
     def _draw_stage(self):
-        stage_rect = pygame.Rect(0, C.UI_TOP_H, self.stage_w, C.STAGE_H)
+        stage_rect = pygame.Rect(0, C.UI_TOP_H, self.stage_w, self.stage_h)
         pygame.draw.rect(self.screen, C.COL_BUFFER, stage_rect)
 
         fx, fy, fw, fh = self.view.frame_rect_screen()

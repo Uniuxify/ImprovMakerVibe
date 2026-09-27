@@ -224,12 +224,48 @@ def main():
     new_width = min(eng.panels.max_width, old_width + 120)
     eng._set_panel_width(new_width)
     assert eng.panel_width == new_width
-    assert eng.stage_w == C.WINDOW_W - eng.panel_width
-    assert eng.panels.area.x == eng.stage_w
+    assert eng.stage_w == C.WINDOW_W
+    assert eng.panels.area.x == C.WINDOW_W - eng.panel_width
     eng._draw()
     eng._set_panel_width(old_width)
     assert eng.panel_width == old_width
-    assert eng.stage_w == C.WINDOW_W - old_width
+    assert eng.stage_w == C.WINDOW_W
+
+    # live panel drag: the panel overlays the stage; the stage width stays fixed
+    grab = eng.panels._resize_rect().center
+    down = pygame.event.Event(pygame.MOUSEBUTTONDOWN, button=1, pos=grab)
+    eng.handle_event(down, grab)
+    for dx in (-20, -40, 20, 0):
+        pos = (grab[0] + dx, grab[1])
+        move = pygame.event.Event(pygame.MOUSEMOTION, pos=pos,
+                                  rel=(dx, 0), buttons=(1, 0, 0))
+        eng.handle_event(move, pos)
+        assert eng.stage_w == C.WINDOW_W
+        assert eng.panels.width == eng.panel_width
+        assert eng.panels.area.right == C.WINDOW_W
+        assert eng.panels.area.x == C.WINDOW_W - eng.panel_width
+    eng.panels._resizing = False
+    eng._set_panel_width(old_width)
+    assert eng.panels.area.x == C.WINDOW_W - eng.panel_width
+    eng._draw()
+
+    old_window = (eng.window_w, eng.window_h)
+    eng._on_window_resize(2400, 1200)
+    assert eng.window_w == 2400 and eng.window_h == 1200
+    assert eng.stage_h == C.stage_height(1200)
+    assert eng.view.stage_h == eng.stage_h
+    assert eng.stage_w == C.WINDOW_W
+    assert eng.panels.area.right == C.WINDOW_W
+    assert eng.panels.area.bottom == C.WINDOW_H - C.STATUS_H
+    assert eng.panels.area.x == C.WINDOW_W - eng.panel_width
+    eng._draw()
+
+    eng._on_window_resize(*old_window)
+    assert eng.stage_w == C.WINDOW_W
+    assert eng.panels.area.right == C.WINDOW_W
+    assert eng.panels.area.bottom == C.WINDOW_H - C.STATUS_H
+    assert eng.panels.area.x == C.WINDOW_W - eng.panel_width
+    eng._draw()
 
     eng._draw()
     pygame.quit()

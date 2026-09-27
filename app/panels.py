@@ -2,7 +2,7 @@
 
 Sprites and backgrounds are shown as an adaptive icon grid. Sounds and scenes
 remain full-width list rows. The panel can be resized by dragging its left
-edge; the minimum width is the historical default width.
+edge; it overlays the stage and does not change the stage layout.
 """
 import pygame
 
@@ -77,17 +77,44 @@ class PanelManager:
     def toggle(self):
         self.visible = not self.visible
 
+    def set_bounds(self, right=None, height=None):
+        changed = False
+
+        if right is not None:
+            new_right = int(right)
+            if self._right != new_right:
+                self._right = new_right
+                changed = True
+
+        if self.area.y != C.UI_TOP_H:
+            self.area.y = C.UI_TOP_H
+            changed = True
+
+        if height is not None:
+            new_h = max(0, int(height))
+            if self.area.h != new_h:
+                self.area.h = new_h
+                changed = True
+
+        new_x = self._right - self.width
+        if self.area.x != new_x or self.area.w != self.width:
+            self.area.x = new_x
+            self.area.w = self.width
+            changed = True
+
+        if changed:
+            self._layout_tabs()
+            self._clamp_scroll(self.active)
+
+        return changed
+
     def set_width(self, width):
         width = max(self.min_width, min(self.max_width, int(width)))
-        if width == self.width and self.area.w == width:
-            return False
-
-        self.width = width
-        self.area.x = self._right - self.width
-        self.area.w = self.width
-        self._layout_tabs()
-        self._clamp_scroll(self.active)
-        return True
+        changed = False
+        if self.width != width:
+            self.width = width
+            changed = True
+        return self.set_bounds() or changed
 
     def set_items(self, panel_name, items):
         panel = self.panels[panel_name]
@@ -222,8 +249,8 @@ class PanelManager:
 
         elif event.type == pygame.MOUSEMOTION:
             if self._resizing:
-                self.set_width(self._right - event.pos[0])
-                return ("panel_resize", self.width)
+                desired_width = int(self._right - event.pos[0])
+                return ("panel_resize", desired_width)
             if self.drag_item is not None:
                 self.drag_pos = event.pos
 

@@ -39,6 +39,12 @@ def max_panel_width(window_w=WINDOW_W):
         min(int(window_w * PANEL_MAX_RATIO), window_w - MIN_STAGE_W),
     )
 
+
+def stage_height(window_h=None):
+    """Height of the stage area between the toolbar and the status bar."""
+    h = WINDOW_H if window_h is None else int(window_h)
+    return max(0, h - UI_TOP_H - STATUS_H)
+
 FPS = 30
 
 # --- Colors ---
