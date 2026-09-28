@@ -49,10 +49,13 @@ class Engine:
         if self.fullscreen:
             self.window_w, self.window_h = self._desktop_size()
         else:
-            self.window_w, self.window_h = self.windowed_size
+            # launch the windowed app maximized so it fills the screen
+            self.window_w, self.window_h = self._desktop_size()
         C.WINDOW_W, C.WINDOW_H = self.window_w, self.window_h
         self.screen = self._set_display_mode((self.window_w, self.window_h),
                                              self._window_flags())
+        if not self.fullscreen:
+            self._maximize_window()
         pygame.display.set_caption("Scene Puppet")
         self.clock = pygame.time.Clock()
 
@@ -234,6 +237,23 @@ class Engine:
             return pygame.FULLSCREEN
         return pygame.RESIZABLE
 
+    def _maximize_window(self):
+        """Maximize the OS window, keeping it in windowed (decorated)
+        mode so the app fills the screen without true fullscreen."""
+        try:
+            from pygame._sdl2 import video as _sdl2_video
+            win = _sdl2_video.Window.from_display_module()
+            win.maximize()
+            pygame.event.pump()
+        except Exception:
+            pass
+
+    def toggle_fullscreen(self):
+        """Switch between true fullscreen and maximized windowed mode."""
+        self._apply_fullscreen(not self.fullscreen)
+        self.status = ("Fullscreen" if self.fullscreen
+                       else "Windowed mode")
+
     def _set_display_mode(self, size, flags):
         try:
             return pygame.display.set_mode(size, flags)
@@ -276,13 +296,13 @@ class Engine:
             C.WINDOW_W, C.WINDOW_H = w, h
             self.screen = self._set_display_mode((w, h), self._window_flags())
         else:
-            w, h = self.windowed_size or (C.WINDOW_W, C.WINDOW_H)
-            w = max(C.MIN_WINDOW_W, int(w))
-            h = max(C.MIN_WINDOW_H, int(h))
+            # return to a maximized windowed mode (not true fullscreen)
+            w, h = self._desktop_size()
             self.fullscreen = False
             self.window_w, self.window_h = w, h
             C.WINDOW_W, C.WINDOW_H = w, h
             self.screen = self._set_display_mode((w, h), self._window_flags())
+            self._maximize_window()
 
         self._update_layout()
 
@@ -335,6 +355,8 @@ class Engine:
                     running = False
                 elif event.type == pygame.KEYDOWN and event.key == pygame.K_ESCAPE:
                     running = False
+                elif event.type == pygame.KEYDOWN and event.key == pygame.K_F11:
+                    self.toggle_fullscreen()
                 elif event.type == pygame.VIDEORESIZE:
                     self._on_window_resize(event.w, event.h)
                 else:
