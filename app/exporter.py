@@ -40,12 +40,14 @@ def export(log, assets, out_path, progress=None):
 
     audio_inputs, audio_filters = _build_audio_graph(log, assets)
     cmd = _build_command(out_path, fps, audio_inputs, audio_filters)
-
+    err_path = out_path + ".ffmpeg.log"
+    err_file = open(err_path, "wb")
     proc = subprocess.Popen(cmd, stdin=subprocess.PIPE,
-                            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                            stdout=subprocess.DEVNULL, stderr=err_file)
     try:
         for i in range(total_frames):
             t = i / fps
+            runtime.update_to(t)
             frame_surf.fill((0, 0, 0))
             runtime.render(frame_surf, t)
             raw = pygame.image.tostring(frame_surf, "RGB")
@@ -59,7 +61,8 @@ def export(log, assets, out_path, progress=None):
         _, err = proc.communicate()
     if proc.returncode != 0:
         raise ExportError(
-            "ffmpeg failed:\n" + (err.decode("utf-8", "ignore") if err else ""))
+            f"ffmpeg failed (code {proc.returncode}):\n"
+            + (err.decode("utf-8", "ignore") if err else "(no stderr)"))
     if progress:
         progress(1.0)
     return out_path
@@ -80,17 +83,19 @@ def _build_audio_graph(log, assets):
     chains = []
     labels = []
 
+    # Input index 0 is the rawvideo stream from stdin.
+    # Every audio input we add starts at index 1.
+    next_index = 1
+
     # microphone track
     mic = _resolve(log.mic_path, assets) if log.mic_path else None
     if mic:
         inputs += ["-i", mic]
-        chains.append("[%d:a]aresample=%d[mic]" % (len(inputs) // 2 - 1,
-                                                   C.SAMPLE_RATE))
+        chains.append("[%d:a]aresample=%d[mic]" % (next_index, C.SAMPLE_RATE))
         labels.append("[mic]")
+        next_index += 1
 
     # sound effects, delayed to their logged time
-    idx_base = len(inputs) // 2
-    sfx_count = 0
     for ev in sorted(log.events, key=lambda e: e["t"]):
         if ev["type"] != "sound":
             continue
@@ -100,12 +105,11 @@ def _build_audio_graph(log, assets):
         if not src:
             continue
         inputs += ["-i", src]
-        i = idx_base + sfx_count
         delay = int(ev["t"] * 1000)
         chains.append("[%d:a]aresample=%d,adelay=%d:all=1[sfx%d]"
-                      % (i, C.SAMPLE_RATE, delay, sfx_count))
-        labels.append("[sfx%d]" % sfx_count)
-        sfx_count += 1
+                      % (next_index, C.SAMPLE_RATE, delay, len(labels)))
+        labels.append("[sfx%d]" % len(labels))
+        next_index += 1
 
     if not labels:
         return inputs, []
