@@ -36,9 +36,22 @@ class View:
         self.frame_x = mouse_sx - (wx - C.MARGIN) * self.scale
         self.frame_y = mouse_sy - (wy - C.MARGIN) * self.scale
 
-    def reset_view(self):
+    def set_scale(self, factor):
+        """Set an absolute zoom factor while keeping the centre of the
+        visible frame fixed on screen."""
+        factor = max(0.25, min(3.0, float(factor)))
+        if factor == self.scale:
+            return
+        cx = self.frame_x + self.frame_w * self.scale / 2.0
+        cy = self.frame_y + self.frame_h * self.scale / 2.0
+        self.scale = factor
+        self.frame_x = cx - self.frame_w * self.scale / 2.0
+        self.frame_y = cy - self.frame_h * self.scale / 2.0
+
+    def reset_view(self, usable_w=None):
         self.scale = 1.0
-        self.frame_x = max(10.0, (self.stage_w - self.frame_w * self.scale) / 2.0)
+        width = self.stage_w if usable_w is None else int(usable_w)
+        self.frame_x = max(10.0, (width - self.frame_w * self.scale) / 2.0)
         self.frame_y = max(float(C.UI_TOP_H + 10), C.UI_TOP_H + (self.stage_h - self.frame_h * self.scale) / 2.0)
 
     def pan(self, dx, dy):

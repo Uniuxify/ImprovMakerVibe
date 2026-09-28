@@ -125,6 +125,13 @@ class Engine:
         self.marquee_additive = False
         self.frame_surf = pygame.Surface((self.frame_w, self.frame_h))
 
+        # zoom dropdown control (status bar)
+        self.zoom_menu_open = False
+        self._zoom_click_rect = None
+        self._zoom_menu_box = None
+        self._zoom_menu_rects = []
+        self._zoom_last_click_time = 0.0
+
         self._build_toolbar()
         self.refresh_panels()
 
@@ -168,6 +175,13 @@ class Engine:
             x += w + 6
 
     def _effective_stage_width(self):
+        return C.WINDOW_W
+
+    def _usable_stage_width(self):
+        """Width available to the scene frame, excluding the right side
+        panel when it is visible."""
+        if self.panels.visible:
+            return max(1, C.WINDOW_W - self.panel_width)
         return C.WINDOW_W
 
     def _point_in_panel(self, sx, sy):
@@ -350,8 +364,60 @@ class Engine:
                 self.player.stop()
                 self.status = "Playback finished."
 
+    # ---- zoom control -------------------------------------------------
+    def set_zoom(self, factor):
+        """Set an absolute zoom factor and keep the frame on screen."""
+        self.view.set_scale(factor)
+        self._clamp_view_to_stage()
+
+    def toggle_zoom_menu(self):
+        self.zoom_menu_open = not self.zoom_menu_open
+
+    def handle_zoom_event(self, event, mouse_pos):
+        """Handle clicks on the status-bar Zoom control and its dropdown.
+        Returns True when the event was consumed."""
+        if event.type != pygame.MOUSEBUTTONDOWN or event.button != 1:
+            return self.zoom_menu_open and event.type == pygame.MOUSEMOTION
+
+        pos = event.pos
+        # click on an item of the open dropdown
+        if self.zoom_menu_open:
+            for rect, factor in self._zoom_menu_rects:
+                if rect.collidepoint(pos):
+                    self.set_zoom(factor)
+                    self.zoom_menu_open = False
+                    self._zoom_last_click_time = 0.0
+                    return True
+            # click inside the dropdown box but not on an item: swallow it
+            if self._zoom_menu_box is not None and \
+                    self._zoom_menu_box.collidepoint(pos):
+                return True
+
+        # click on the Zoom control itself
+        if self._zoom_click_rect is not None and \
+                self._zoom_click_rect.collidepoint(pos):
+            now = time.perf_counter()
+            if now - self._zoom_last_click_time <= 0.35:
+                # double click: reset to 100% and centre the camera,
+                # accounting for the visible right side panel
+                self.set_zoom(1.0)
+                self.view.reset_view(self._usable_stage_width())
+                self.zoom_menu_open = False
+                self._zoom_last_click_time = 0.0
+            else:
+                self._zoom_last_click_time = now
+                self.toggle_zoom_menu()
+            return True
+
+        # clicking anywhere else closes the menu
+        self.zoom_menu_open = False
+        return False
+
     # ---- input --------------------------------------------------------
     def handle_event(self, event, mouse_pos):
+        # zoom dropdown has priority (it overlays the toolbar / stage)
+        if self.handle_zoom_event(event, mouse_pos):
+            return
         # toolbar buttons
         for key, btn in self.buttons.items():
             if btn.handle_event(event, mouse_pos):
@@ -1397,5 +1463,53 @@ class Engine:
             time_text = f"t={t:.1f}s"
         text = f"{self.status}    |    {time_text}"
         ui.draw_status(self.screen, text, rect)
-        zoom_text = f"Zoom: {int(round(self.view.scale * 100))}%"
-        ui.draw_label(self.screen, zoom_text, (rect.right - 110, rect.y + 5), size=14, color=C.COL_ACCENT)
+        self._draw_zoom_control(rect)
+
+    def _draw_zoom_control(self, rect):
+        zoom_text = f"Zoom: {int(round(self.view.scale * 100))}%  \u25be"
+        click = pygame.Rect(rect.right - 118, rect.y + 2, 112, rect.h - 4)
+        self._zoom_click_rect = click
+        hover = click.collidepoint(pygame.mouse.get_pos())
+        bg = C.COL_BUTTON_HOVER if (hover or self.zoom_menu_open) \
+            else C.COL_PANEL
+        pygame.draw.rect(self.screen, bg, click, border_radius=5)
+        pygame.draw.rect(self.screen, C.COL_ACCENT, click, 1,
+                         border_radius=5)
+        font = ui.get_font(14)
+        txt = font.render(zoom_text, True, C.COL_ACCENT)
+        self.screen.blit(txt, txt.get_rect(center=click.center))
+
+        if self.zoom_menu_open:
+            self._draw_zoom_menu(click)
+
+    def _draw_zoom_menu(self, click):
+        options = [(1.0, "100%"), (0.75, "75%"), (0.5, "50%"),
+                   (0.25, "25%")]
+        row_h = 26
+        box_w = 112
+        box_h = row_h * len(options) + 8
+        # drop the menu upwards from the status bar
+        box = pygame.Rect(click.right - box_w, click.top - box_h - 4,
+                          box_w, box_h)
+        self._zoom_menu_box = box
+        pygame.draw.rect(self.screen, C.COL_PANEL, box, border_radius=6)
+        pygame.draw.rect(self.screen, C.COL_ACCENT, box, 1, border_radius=6)
+        self._zoom_menu_rects = []
+        font = ui.get_font(14)
+        mouse = pygame.mouse.get_pos()
+        for i, (factor, label) in enumerate(options):
+            r = pygame.Rect(box.x + 4, box.y + 4 + i * row_h,
+                            box.w - 8, row_h)
+            self._zoom_menu_rects.append((r, factor))
+            active = abs(self.view.scale - factor) < 1e-6
+            if r.collidepoint(mouse):
+                pygame.draw.rect(self.screen, C.COL_BUTTON_HOVER, r,
+                                 border_radius=4)
+            col = C.COL_ACCENT if (active or r.collidepoint(mouse)) \
+                else C.COL_TEXT
+            txt = font.render(label, True, col)
+            self.screen.blit(txt, (r.x + 10,
+                                   r.y + (r.h - txt.get_height()) // 2))
+            if active:
+                pygame.draw.rect(self.screen, C.COL_ACCENT, r, 1,
+                                 border_radius=4)
