@@ -28,6 +28,14 @@ MODE_RESUMING = "RESUMING"
 MODE_PLAY = "PLAY"
 MODE_EXPORT = "EXPORT"
 
+# Screen-pixel pad around the group frame so its handles never coincide with
+# the handles of the individual sprites inside the group.
+GROUP_BOX_PAD = 20
+# Frame/handle colour used for the selection in "show hitboxes" mode.
+COL_SELECTED = (225, 70, 70)
+# Frame/handle colour for unselected objects when hitboxes are always on.
+COL_HITBOX = (150, 152, 160)
+
 
 class Engine:
     def __init__(self):
@@ -35,6 +43,7 @@ class Engine:
         C.ensure_dirs()
         self.settings = S.load_settings()
         self.fullscreen = bool(self.settings.get("fullscreen", False))
+        self.show_hitboxes = bool(self.settings.get("show_hitboxes", False))
         try:
             window_w = int(self.settings.get("window_width", C.WINDOW_W))
         except (TypeError, ValueError):
@@ -116,6 +125,8 @@ class Engine:
         self.clipboard = []             # list of copied sprite dicts
         self.resizing = None            # Sprite being resized
         self.resize_handle = None
+        self._group_snap = None         # {sprite: (x, y, sx, sy)} group resize
+        self._group_start_box = None    # group frame bounds at drag start
         self._pin_x = 0.0
         self._pin_side_x = None         # "left" or "right"
         self._pin_y = 0.0
@@ -444,13 +455,77 @@ class Engine:
         # stage interaction
         self.handle_stage(event, mouse_pos)
 
-    def _flip_buttons(self, sp):
-        sx, sy = self.view.w2s(sp.x, sp.y)
-        ex, ey = self.view.w2s(sp.x + sp.w, sp.y + sp.h)
+    def _flip_buttons_rect(self, x1, y1, x2, y2):
+        """Flip buttons placed under a world-space box."""
+        sx, sy = self.view.w2s(x1, y1)
+        ex, ey = self.view.w2s(x2, y2)
         mid_x = int((sx + ex) / 2)
         btn_h = pygame.Rect(mid_x - 62, int(ey + 8), 58, 22)
         btn_v = pygame.Rect(mid_x + 4, int(ey + 8), 58, 22)
         return btn_h, btn_v
+
+    def _flip_buttons(self, sp):
+        return self._flip_buttons_rect(sp.x, sp.y, sp.x + sp.w, sp.y + sp.h)
+
+    def _selection_sprites(self):
+        """Selected sprites that still belong to the active scene."""
+        sc = self.stage.active
+        return [s for s in self.selected_sprites if s in sc.sprites]
+
+    @staticmethod
+    def _box_handle_points(x1, y1, x2, y2):
+        """8 resize handles around an arbitrary world-space box."""
+        w, h = x2 - x1, y2 - y1
+        return {
+            "top": (x1 + w / 2.0, y1),
+            "bottom": (x1 + w / 2.0, y2),
+            "left": (x1, y1 + h / 2.0),
+            "right": (x2, y1 + h / 2.0),
+            "top_left": (x1, y1),
+            "top_right": (x2, y1),
+            "bottom_left": (x1, y2),
+            "bottom_right": (x2, y2),
+        }
+
+    def _group_bounds(self, sprites=None):
+        """Union of the given sprites' rectangles (world space), or None."""
+        if sprites is None:
+            sprites = self._selection_sprites()
+        if not sprites:
+            return None
+        x1 = min(s.x for s in sprites)
+        y1 = min(s.y for s in sprites)
+        x2 = max(s.x + s.w for s in sprites)
+        y2 = max(s.y + s.h for s in sprites)
+        return (x1, y1, x2, y2)
+
+    def _group_box(self, sprites=None):
+        """Padded group frame (world space) for a multi-selection.
+        The pad keeps the group handles clear of the individual ones."""
+        if sprites is None:
+            sprites = self._selection_sprites()
+        if len(sprites) < 2:
+            return None
+        x1, y1, x2, y2 = self._group_bounds(sprites)
+        pad = GROUP_BOX_PAD / max(self.view.scale, 1e-6)
+        return (x1 - pad, y1 - pad, x2 + pad, y2 + pad)
+
+    def _flip_sprites(self, sprites, horizontal):
+        """Toggle a flip axis on every given sprite and log each change."""
+        targets = [sp for sp in sprites
+                   if sp in self.stage.active.sprites]
+        if not targets:
+            return
+        for sp in targets:
+            if horizontal:
+                sp.toggle_flip_h()
+            else:
+                sp.toggle_flip_v()
+            if self._logging():
+                self.recorder.log_flip(self._edit_t(), sp, sp.flip_x,
+                                       sp.flip_y)
+        self.status = (f"Flip {'H' if horizontal else 'V'}: "
+                       f"{len(targets)} object(s).")
 
     def handle_stage(self, event, mouse_pos):
         if self.mode == MODE_PLAY:
@@ -494,31 +569,51 @@ class Engine:
             sc = self.stage.active
             if self.marquee_selecting:
                 return
-            # 1. Flip buttons for selected sprite
-            if self.selected is not None and self.selected in sc.sprites and self._editable():
-                btn_h, btn_v = self._flip_buttons(self.selected)
+            sel = self._selection_sprites()
+            group_box = self._group_box(sel)
+            tol = HANDLE_TOL / self.view.scale
+
+            # 1. Group frame: flip buttons + resize handles (multi-select).
+            #    Checked before everything else so group controls win over
+            #    the individual ones drawn inside the frame.
+            if group_box is not None and self._editable():
+                btn_h, btn_v = self._flip_buttons_rect(*group_box)
                 if btn_h.collidepoint(sx, sy):
-                    self.selected.toggle_flip_h()
-                    if self._logging():
-                        self.recorder.log_flip(self._edit_t(), self.selected,
-                                               self.selected.flip_x,
-                                               self.selected.flip_y)
+                    self._flip_sprites(sel, horizontal=True)
                     return
                 if btn_v.collidepoint(sx, sy):
-                    self.selected.toggle_flip_v()
-                    if self._logging():
-                        self.recorder.log_flip(self._edit_t(), self.selected,
-                                               self.selected.flip_x,
-                                               self.selected.flip_y)
+                    self._flip_sprites(sel, horizontal=False)
                     return
+                for name, (hx, hy) in self._box_handle_points(*group_box
+                                                              ).items():
+                    if abs(wx - hx) <= tol and abs(wy - hy) <= tol:
+                        self._start_group_resize(group_box, sel, name)
+                        return
 
-            # 2. Resize handles of the primary selected sprite
-            if (self.selected is not None and self.selected in sc.sprites
-                    and self._editable()):
-                handle = self.selected.hit_handle(
-                    wx, wy, tol=HANDLE_TOL / self.view.scale)
+            # 2. Individual flip buttons and resize handles.
+            #    With "show hitboxes" every sprite exposes them; otherwise
+            #    only a single selected sprite does (for a group the frame
+            #    above owns the controls).
+            if not self._editable():
+                candidates = []
+            elif self.show_hitboxes:
+                candidates = list(sc.sprites)
+            elif len(sel) == 1:
+                candidates = [sel[0]]
+            else:
+                candidates = []
+            for sp in candidates:
+                btn_h, btn_v = self._flip_buttons(sp)
+                if btn_h.collidepoint(sx, sy):
+                    self._flip_sprites([sp], horizontal=True)
+                    return
+                if btn_v.collidepoint(sx, sy):
+                    self._flip_sprites([sp], horizontal=False)
+                    return
+            for sp in candidates:
+                handle = sp.hit_handle(wx, wy, tol=tol)
                 if handle is not None:
-                    self._start_resize(self.selected, handle)
+                    self._start_resize(sp, handle)
                     return
 
             # 3. Sprite selection & multi-select
@@ -558,7 +653,9 @@ class Engine:
                 self.marquee_end = (sx, sy)
                 return
             wx, wy = self.view.s2w(sx, sy)
-            if self.resizing is not None and self._editable():
+            if self._group_snap is not None and self._editable():
+                self._group_resize_to(wx, wy)
+            elif self.resizing is not None and self._editable():
                 self._resize_to(wx, wy)
             elif self.dragging_sprites and self._editable():
                 for s in self.dragging_sprites:
@@ -582,6 +679,8 @@ class Engine:
             self.dragging_sprites = []
             self.resizing = None
             self.resize_handle = None
+            self._group_snap = None
+            self._group_start_box = None
 
         elif event.type == pygame.KEYDOWN and self._editable():
             mods = pygame.key.get_mods()
@@ -728,6 +827,96 @@ class Engine:
                                     anchor_side_x=self._pin_side_x,
                                     anchor_y=self._pin_y if self._pin_side_y else None,
                                     anchor_side_y=self._pin_side_y)
+
+    # ---- group resize (multi-selection) --------------------------------
+    def _start_group_resize(self, box, sprites, handle):
+        """Begin scaling a group from one of its frame handles.
+        The opposite edges of the frame stay pinned, mirroring the
+        behaviour of a single-sprite resize."""
+        bx1, by1, bx2, by2 = box
+        self._group_start_box = box
+        # snapshot: sprite -> (x, y, scale_x, scale_y)
+        self._group_snap = {sp: (sp.x, sp.y, sp.scale_x, sp.scale_y)
+                            for sp in sprites}
+        self.resizing = None
+        self.resize_handle = handle
+        self._pin_x = 0.0
+        self._pin_side_x = None
+        self._pin_y = 0.0
+        self._pin_side_y = None
+
+        if "right" in handle:
+            self._pin_x = float(bx1)
+            self._pin_side_x = "left"
+        elif "left" in handle:
+            self._pin_x = float(bx2)
+            self._pin_side_x = "right"
+
+        if "bottom" in handle:
+            self._pin_y = float(by1)
+            self._pin_side_y = "top"
+        elif "top" in handle:
+            self._pin_y = float(by2)
+            self._pin_side_y = "bottom"
+
+    def _group_resize_to(self, wx, wy):
+        box = self._group_start_box
+        snaps = self._group_snap
+        if box is None or not snaps:
+            return
+        bx1, by1, bx2, by2 = box
+        start_w = max(1.0, bx2 - bx1)
+        start_h = max(1.0, by2 - by1)
+
+        is_shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
+
+        # desired new frame size
+        if self._pin_side_x == "left":
+            new_w = max(1.0, float(wx) - self._pin_x)
+        elif self._pin_side_x == "right":
+            new_w = max(1.0, self._pin_x - float(wx))
+        else:
+            new_w = start_w
+        if self._pin_side_y == "top":
+            new_h = max(1.0, float(wy) - self._pin_y)
+        elif self._pin_side_y == "bottom":
+            new_h = max(1.0, self._pin_y - float(wy))
+        else:
+            new_h = start_h
+
+        # proportional scaling with Shift on a corner handle
+        if is_shift and self._pin_side_x and self._pin_side_y:
+            factor = max(new_w / start_w, new_h / start_h)
+            new_w = start_w * factor
+            new_h = start_h * factor
+
+        factor_x = new_w / start_w if self._pin_side_x else 1.0
+        factor_y = new_h / start_h if self._pin_side_y else 1.0
+
+        # new top-left of the frame (the pinned edge does not move)
+        if self._pin_side_x == "left":
+            new_x1 = self._pin_x
+        elif self._pin_side_x == "right":
+            new_x1 = self._pin_x - new_w
+        else:
+            new_x1 = bx1
+        if self._pin_side_y == "top":
+            new_y1 = self._pin_y
+        elif self._pin_side_y == "bottom":
+            new_y1 = self._pin_y - new_h
+        else:
+            new_y1 = by1
+
+        # every sprite is mapped linearly inside the frame
+        for sp, (ox, oy, osx, osy) in snaps.items():
+            sp.set_scale(osx * factor_x, osy * factor_y)
+            sp.x = new_x1 + (ox - bx1) * factor_x
+            sp.y = new_y1 + (oy - by1) * factor_y
+            if self._logging():
+                self.recorder.log_move(self._edit_t(), sp, sp.x, sp.y,
+                                       force=True)
+                self.recorder.log_scale(self._edit_t(), sp, sp.scale_x,
+                                        sp.scale_y)
 
     # ---- marquee selection --------------------------------------------
     def _start_marquee(self, sx, sy, additive=False):
@@ -1073,6 +1262,11 @@ class Engine:
                                    "На весь экран", toggle=True)
         fullscreen_btn.active = fullscreen
 
+        hitboxes = self.show_hitboxes
+        hitboxes_btn = ui.Button((box.x + 212, box.y + 276, 324, 32),
+                                 "Хитбоксы всех объектов", toggle=True)
+        hitboxes_btn.active = hitboxes
+
         save_btn = ui.Button((box.right - 184, box.bottom - 44, 80, 32), "Save")
         cancel_btn = ui.Button((box.right - 96, box.bottom - 44, 80, 32),
                                "Cancel")
@@ -1108,12 +1302,14 @@ class Engine:
                         "pause_duration": round(pause_value, 3),
                         "panel_width": self.panel_width,
                         "fullscreen": fullscreen,
+                        "show_hitboxes": hitboxes,
                         "window_width": window_width,
                         "window_height": window_height,
                     })
                     self.settings = saved
                     path_text = saved["media_initial_dir"]
                     cursor_pos = len(path_text)
+                    self.show_hitboxes = saved["show_hitboxes"]
                     self.status = "Settings saved."
                     if fullscreen != self.fullscreen:
                         pending_fullscreen = fullscreen
@@ -1135,6 +1331,10 @@ class Engine:
                     input_focused = False
                     fullscreen = not fullscreen
                     fullscreen_btn.active = fullscreen
+                elif hitboxes_btn.handle_event(event, mouse):
+                    input_focused = False
+                    hitboxes = not hitboxes
+                    hitboxes_btn.active = hitboxes
                 else:
                     for btn, kind in transition_btns:
                         if btn.handle_event(event, mouse):
@@ -1259,6 +1459,7 @@ class Engine:
                           color=C.COL_TEXT_DIM)
 
             fullscreen_btn.draw(self.screen)
+            hitboxes_btn.draw(self.screen)
 
             if error_msg:
                 ui.draw_label(self.screen, error_msg,
@@ -1466,37 +1667,34 @@ class Engine:
                     overlay = pygame.transform.smoothscale(overlay, (fw, fh))
                 self.screen.blit(overlay, (fx, fy))
 
-            # selection highlight + resize handles + flip buttons
-            for sp in self.selected_sprites:
-                if sp not in sc.sprites:
-                    continue
-                sx, sy = self.view.w2s(sp.x, sp.y)
-                ex, ey = self.view.w2s(sp.x + sp.w, sp.y + sp.h)
-                pygame.draw.rect(self.screen, C.COL_ACCENT,
-                                (int(sx), int(sy), int(ex - sx),
-                                int(ey - sy)), 2)
+            # ---- selection / hitbox frames, handles, flip buttons ----
+            sel = [s for s in self.selected_sprites if s in sc.sprites]
+            group_box = self._group_box(sel)
 
-            if self.selected is not None and self.selected in sc.sprites:
-                sp = self.selected
-                # 8 resize handles
-                for _n, (hx, hy) in sp.handle_points().items():
-                    hxs, hys = self.view.w2s(hx, hy)
-                    r = pygame.Rect(0, 0, 10, 10)
-                    r.center = (int(hxs), int(hys))
-                    pygame.draw.rect(self.screen, C.COL_ACCENT, r)
-                    pygame.draw.rect(self.screen, (255, 255, 255), r, 1)
+            if self.show_hitboxes:
+                # every object shows its frame, handles and flip buttons;
+                # selected ones turn red
+                for sp in sc.sprites:
+                    col = COL_SELECTED if sp in sel else COL_HITBOX
+                    self._draw_sprite_frame(sp, col,
+                                            handles=True, flip=True)
+            else:
+                for sp in sel:
+                    self._draw_sprite_frame(sp, C.COL_ACCENT,
+                                            handles=False, flip=False)
+                # for a lone selection the sprite's own frame hosts the
+                # handles; a group uses its padded frame instead
+                if len(sel) == 1:
+                    self._draw_sprite_frame(sel[0], C.COL_ACCENT,
+                                            handles=True, flip=True)
 
-                # Flip buttons below sprite
-                btn_h, btn_v = self._flip_buttons(sp)
-                pygame.draw.rect(self.screen, C.COL_BUTTON, btn_h, border_radius=4)
-                pygame.draw.rect(self.screen, C.COL_ACCENT if sp.flip_x else (100, 104, 120), btn_h, 1, border_radius=4)
-                ui.draw_label(self.screen, "Flip H", (btn_h.x + 8, btn_h.y + 3), size=13,
-                            color=C.COL_ACCENT if sp.flip_x else C.COL_TEXT)
-
-                pygame.draw.rect(self.screen, C.COL_BUTTON, btn_v, border_radius=4)
-                pygame.draw.rect(self.screen, C.COL_ACCENT if sp.flip_y else (100, 104, 120), btn_v, 1, border_radius=4)
-                ui.draw_label(self.screen, "Flip V", (btn_v.x + 8, btn_v.y + 3), size=13,
-                            color=C.COL_ACCENT if sp.flip_y else C.COL_TEXT)
+            # common group frame (2+ selected objects)
+            if group_box is not None:
+                col = COL_SELECTED if self.show_hitboxes else C.COL_ACCENT
+                self._draw_box_frame(group_box, col,
+                                     handles=True, flip=True,
+                                     flip_h=sel[-1].flip_x,
+                                     flip_v=sel[-1].flip_y)
 
             if self.marquee_selecting:
                 x1, y1 = self.marquee_start
@@ -1513,6 +1711,50 @@ class Engine:
         # frame border
         pygame.draw.rect(self.screen, C.COL_FRAME,
                         (fx, fy, fw, fh), 2)
+
+    def _draw_handles(self, box, color):
+        """8 white-outlined handles around a world-space box."""
+        x1, y1, x2, y2 = box
+        for hx, hy in self._box_handle_points(x1, y1, x2, y2).values():
+            hxs, hys = self.view.w2s(hx, hy)
+            r = pygame.Rect(0, 0, 10, 10)
+            r.center = (int(hxs), int(hys))
+            pygame.draw.rect(self.screen, color, r)
+            pygame.draw.rect(self.screen, (255, 255, 255), r, 1)
+
+    def _draw_flip_buttons(self, box, color, flip_h, flip_v):
+        """Flip H / Flip V buttons below a world-space box."""
+        btn_h, btn_v = self._flip_buttons_rect(*box)
+        pygame.draw.rect(self.screen, C.COL_BUTTON, btn_h, border_radius=4)
+        pygame.draw.rect(self.screen, color if flip_h else (100, 104, 120),
+                         btn_h, 1, border_radius=4)
+        ui.draw_label(self.screen, "Flip H", (btn_h.x + 8, btn_h.y + 3),
+                      size=13, color=color if flip_h else C.COL_TEXT)
+
+        pygame.draw.rect(self.screen, C.COL_BUTTON, btn_v, border_radius=4)
+        pygame.draw.rect(self.screen, color if flip_v else (100, 104, 120),
+                         btn_v, 1, border_radius=4)
+        ui.draw_label(self.screen, "Flip V", (btn_v.x + 8, btn_v.y + 3),
+                      size=13, color=color if flip_v else C.COL_TEXT)
+
+    def _draw_sprite_frame(self, sp, color, handles=False, flip=False):
+        """Frame (plus optional handles / flip buttons) for one sprite."""
+        box = (sp.x, sp.y, sp.x + sp.w, sp.y + sp.h)
+        self._draw_box_frame(box, color, handles=handles, flip=flip,
+                             flip_h=sp.flip_x, flip_v=sp.flip_y)
+
+    def _draw_box_frame(self, box, color, handles=False, flip=False,
+                        flip_h=False, flip_v=False):
+        """Frame around a world-space box: outline, handles, flip buttons."""
+        x1, y1, x2, y2 = box
+        sx, sy = self.view.w2s(x1, y1)
+        ex, ey = self.view.w2s(x2, y2)
+        pygame.draw.rect(self.screen, color,
+                         (int(sx), int(sy), int(ex - sx), int(ey - sy)), 2)
+        if handles:
+            self._draw_handles(box, color)
+        if flip:
+            self._draw_flip_buttons(box, color, flip_h, flip_v)
 
     def _current_cover(self):
         # No transition overlay while authoring (recording/pausing/resuming):

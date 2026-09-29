@@ -12,6 +12,7 @@ DEFAULTS = {
     "pause_duration": C.TRANSITION_DURATION,
     "panel_width": C.PANEL_W,
     "fullscreen": False,
+    "show_hitboxes": False,
     "window_width": C.WINDOW_W,
     "window_height": C.WINDOW_H,
 }
@@ -53,6 +54,12 @@ def _validate(settings):
     if isinstance(fullscreen, str):
         fullscreen = fullscreen.strip().lower() in ("1", "true", "yes", "on")
     data["fullscreen"] = bool(fullscreen)
+
+    show_hitboxes = data.get("show_hitboxes", DEFAULTS["show_hitboxes"])
+    if isinstance(show_hitboxes, str):
+        show_hitboxes = show_hitboxes.strip().lower() in (
+            "1", "true", "yes", "on")
+    data["show_hitboxes"] = bool(show_hitboxes)
 
     try:
         window_width = int(data.get("window_width", DEFAULTS["window_width"]))
