@@ -87,8 +87,12 @@ EXPORT_CRF = 23
 EXPORT_PRESET = "medium"
 
 # --- Transitions ---
-TRANSITION_DURATION = 0.8       # seconds
+TRANSITION_DURATION = 0.8       # default pause transition length (seconds)
 TRANSITION_KINDS = ("curtain", "fade", "wipe")
+
+# --- Pause duration (user configurable) ---
+PAUSE_DURATION_MIN = 0.1        # seconds
+PAUSE_DURATION_MAX = 600.0      # seconds (10 minutes)
 
 # --- Interpolation ---
 TRACK_LERP_MAX_GAP = 0.1

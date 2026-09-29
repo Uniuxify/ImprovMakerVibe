@@ -63,7 +63,7 @@ def main():
             "x": C.MARGIN + 100 + i * 20, "y": C.MARGIN + 100 + i * 5,
         })
     log.events.append({"t": 2.5, "type": "pause", "transition": "fade",
-                       "duration": C.TRANSITION_DURATION, "scene": "scene2"})
+                       "hold": 0.0, "scene": "scene2"})
     log.events.append({"t": 3.4, "type": "background",
                        "background": "gradient_night"})
     log.events.append({"t": 3.5, "type": "scale", "sprite": "hero",
@@ -169,6 +169,34 @@ def main():
     print(f"[check] pause sprite_add: before={absent_before} "
           f"after={present_after} -> {'OK' if ok_pause_add else 'FAIL'}")
 
+    # --- pause "hold": curtain stays closed for the configured time ---
+    anim = C.TRANSITION_DURATION / 2.0
+    hold = 5.0
+    log4 = EventLog()
+    log4.start_state = {
+        "scenes": [{"name": "scene1", "background": "gradient_sky",
+                    "sprites": []}]}
+    log4.events.append({"t": 1.0, "type": "pause", "transition": "curtain",
+                        "hold": hold, "scene": "scene1"})
+    log4.duration = 1.0 + C.TRANSITION_DURATION + hold + 0.5
+    rt4 = Runtime(log4, assets)
+    rt4.update_to(1.0)
+    closed_ok = True
+    s = 1.0 + anim
+    while s < 1.0 + anim + hold - 1e-6:
+        cov, _ = rt4.transition_cover(s)
+        if cov < 0.999:
+            closed_ok = False
+            break
+        s += hold / 10.0
+    mid_cover, _ = rt4.transition_cover(1.0 + anim + hold / 2.0)
+    open_cover, _ = rt4.transition_cover(
+        1.0 + C.TRANSITION_DURATION + hold + 0.01)
+    ok_hold = closed_ok and mid_cover > 0.999 and open_cover < 0.01
+    print(f"[check] pause hold={hold}s closed_throughout={closed_ok} "
+          f"mid={mid_cover:.2f} after={open_cover:.2f} "
+          f"-> {'OK' if ok_hold else 'FAIL'}")
+
     # --- export ----------------------------------------------------
     out = os.path.join(C.PROJECTS_DIR, "selftest.mp4")
     if not exporter.is_available():
@@ -182,7 +210,8 @@ def main():
           f"-> {'OK' if size > 2000 else 'FAIL'}")
 
     all_ok = (ok_interp and ok_cover and ok_scene and ok_bg and ok_scale
-              and ok_flip and ok_pin and ok_pause_add and size > 2000)
+              and ok_flip and ok_pin and ok_pause_add and ok_hold
+              and size > 2000)
     print("[result]", "ALL OK" if all_ok else "SOME CHECKS FAILED")
     return 0 if all_ok else 1
 

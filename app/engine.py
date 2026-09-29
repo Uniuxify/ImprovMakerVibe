@@ -97,6 +97,7 @@ class Engine:
         self.mode = MODE_EDIT
         self.t = 0.0                    # recording clock (seconds)
         self.trans_kind = "curtain"
+        self.trans_hold = C.TRANSITION_DURATION
         self.trans_timer = 0.0
         self.pause_start_t = 0.0
         self.pause_wall_start = 0.0
@@ -369,16 +370,6 @@ class Engine:
     def update(self, dt):
         if self.mode == MODE_RECORD:
             self.t += dt
-        elif self.mode == MODE_PAUSING:
-            self.trans_timer += dt
-            if self.trans_timer >= C.TRANSITION_DURATION / 2:
-                self.mode = MODE_PAUSED
-                self.status = ("Paused. Rearrange objects / switch scene, "
-                               "then press Pause to resume.")
-        elif self.mode == MODE_RESUMING:
-            self.trans_timer += dt
-            if self.trans_timer >= C.TRANSITION_DURATION / 2:
-                self._finish_resume()
         elif self.mode == MODE_PLAY:
             finished = self.player.update(dt)
             if finished:
@@ -655,7 +646,8 @@ class Engine:
 
     def _edit_t(self):
         """Timestamp for a logged edit. While paused, edits are logged at the
-        pause midpoint so the recorded transition hides them on playback."""
+        point where the transition is fully closed, so the recorded curtain
+        hides the change on playback."""
         if self.mode in (MODE_PAUSING, MODE_PAUSED, MODE_RESUMING):
             return self.pause_start_t + C.TRANSITION_DURATION / 2.0
         return self.t
@@ -820,11 +812,12 @@ class Engine:
 
     def stop_recording(self):
         # capture final positions for all sprites. If stopped while paused,
-        # extend the timeline past the pause transition so midpoint edits
-        # stay inside the recording.
+        # extend the timeline past the whole pause transition so the hidden
+        # midpoint edits stay inside the recording.
         end_t = self.t
         if self.mode in (MODE_PAUSING, MODE_PAUSED, MODE_RESUMING):
-            end_t = self.pause_start_t + C.TRANSITION_DURATION
+            end_t = (self.pause_start_t + C.TRANSITION_DURATION +
+                     self.trans_hold)
         for sc in self.stage.scenes:
             for sp in sc.sprites:
                 self.recorder.log_move(end_t, sp, sp.x, sp.y, force=True)
@@ -841,39 +834,46 @@ class Engine:
                        f"{len(self.recorder.log.events)} events.")
 
     def on_pause(self):
+        # Pausing/resuming during recording is instantaneous (no freeze).
+        # The recorded pause event carries the configured "hold" time, which
+        # only affects the transition animation on playback/export.
         if self.mode == MODE_RECORD:
-            self.pause_start_t = self.t
-            self.pause_wall_start = time.perf_counter()
-            self.mic.set_capturing(False)
-            self.trans_kind = self._default_transition()
-            self.scene_changed_in_pause = False
-            # anchor positions before pause so idle stretch is not drift
-            for sc in self.stage.scenes:
-                for sp in sc.sprites:
-                    self.recorder.log_move(self.t, sp, sp.x, sp.y,
-                                           force=True)
-            self.recorder.log_pause(self.t, self.trans_kind,
-                                    C.TRANSITION_DURATION,
-                                    self.stage.active.name)
-            self._pending_pause_event = self.recorder.log.events[-1]
-            self.trans_timer = 0.0
-            self.mode = MODE_PAUSING
-            self.status = "Pausing (transition)..."
+            self._enter_pause()
         elif self.mode == MODE_PAUSED:
-            self.mode = MODE_RESUMING
-            self.trans_timer = 0.0
-            self.status = "Resuming..."
+            self._resume_from_pause()
 
-    def _finish_resume(self):
-        # advance the recording clock to include the transition
-        self.t = self.pause_start_t + C.TRANSITION_DURATION
+    def _enter_pause(self):
+        self.pause_start_t = self.t
+        self.pause_wall_start = time.perf_counter()
+        self.mic.set_capturing(False)
+        self.trans_kind = self._default_transition()
+        self.trans_hold = self._pause_duration()
+        self.scene_changed_in_pause = False
+        # anchor positions before pause so idle stretch is not drift
+        for sc in self.stage.scenes:
+            for sp in sc.sprites:
+                self.recorder.log_move(self.t, sp, sp.x, sp.y,
+                                       force=True)
+        self.recorder.log_pause(self.t, self.trans_kind, self.trans_hold,
+                                self.stage.active.name)
+        self._pending_pause_event = self.recorder.log.events[-1]
+        self.mode = MODE_PAUSED
+        self.status = ("Paused. Rearrange objects / switch scene, "
+                       "then press Pause to resume.")
+
+    def _resume_from_pause(self):
+        # The pause occupies a fixed span on the timeline:
+        #   close (anim) + hold (configurable) + open (anim).
+        span = C.TRANSITION_DURATION + self.trans_hold
+        # advance the recording clock instantly past the transition
+        self.t = self.pause_start_t + span
         # keep the microphone track aligned with the recording clock:
-        # the pause captured nothing, so insert exactly one transition of
-        # silence before resuming capture.
-        self.mic.insert_silence(C.TRANSITION_DURATION)
+        # the pause captured nothing, so insert the transition of silence
+        # before resuming capture.
+        self.mic.insert_silence(span)
         self.mic.set_capturing(True)
         # teleport all sprites to their (possibly edited) paused positions,
-        # logged at the transition midpoint so the cover hides the jump
+        # logged where the curtain is fully closed so the cover hides the jump
         mid = self.pause_start_t + C.TRANSITION_DURATION / 2
         for sc in self.stage.scenes:
             for sp in sc.sprites:
@@ -1011,6 +1011,27 @@ class Engine:
             kind = "curtain"
         return kind
 
+    def _pause_duration(self):
+        """Configured length (seconds) of a playback pause transition."""
+        try:
+            value = float(self.settings.get("pause_duration",
+                                            C.TRANSITION_DURATION))
+        except (TypeError, ValueError):
+            value = C.TRANSITION_DURATION
+        return max(C.PAUSE_DURATION_MIN,
+                   min(C.PAUSE_DURATION_MAX, value))
+
+    @staticmethod
+    def _format_duration(value):
+        """Render a seconds value for the pause-duration input field."""
+        try:
+            value = float(value)
+        except (TypeError, ValueError):
+            value = C.TRANSITION_DURATION
+        if value == int(value):
+            return str(int(value))
+        return f"{value:.3f}".rstrip("0").rstrip(".")
+
     def _media_initial_dir(self, fallback):
         path = self.settings.get("media_initial_dir") or fallback
         if os.path.isdir(path):
@@ -1018,16 +1039,19 @@ class Engine:
         return fallback
 
     def settings_dialog(self):
-        box_w, box_h = 560, 300
+        box_w, box_h = 560, 360
         box = pygame.Rect((C.WINDOW_W - box_w) // 2,
                           (C.WINDOW_H - box_h) // 2, box_w, box_h)
 
         path_text = self.settings.get("media_initial_dir", C.ASSETS_DIR)
         transition = self._default_transition()
+        pause_text = self._format_duration(self._pause_duration())
         fullscreen = bool(self.settings.get("fullscreen", False))
         pending_fullscreen = None
         input_focused = False
+        pause_focused = False
         cursor_pos = len(path_text)
+        pause_cursor = len(pause_text)
         cursor_timer = 0
         error_msg = ""
 
@@ -1043,7 +1067,9 @@ class Engine:
             btn.active = (kind == transition)
             transition_btns.append((btn, kind))
 
-        fullscreen_btn = ui.Button((box.x + 24, box.y + 200, 180, 32),
+        pause_rect = pygame.Rect(box.x + 24, box.y + 226, 120, 32)
+
+        fullscreen_btn = ui.Button((box.x + 24, box.y + 276, 180, 32),
                                    "На весь экран", toggle=True)
         fullscreen_btn.active = fullscreen
 
@@ -1070,9 +1096,16 @@ class Engine:
                         continue
                     window_width, window_height = self.windowed_size or (
                         self.window_w, self.window_h)
+                    try:
+                        pause_value = float(pause_text)
+                    except (TypeError, ValueError):
+                        pause_value = self._pause_duration()
+                    pause_value = max(C.PAUSE_DURATION_MIN,
+                                      min(C.PAUSE_DURATION_MAX, pause_value))
                     saved = S.save_settings({
                         "media_initial_dir": os.path.abspath(clean_path),
                         "default_pause_transition": transition,
+                        "pause_duration": round(pause_value, 3),
                         "panel_width": self.panel_width,
                         "fullscreen": fullscreen,
                         "window_width": window_width,
@@ -1106,14 +1139,18 @@ class Engine:
                     for btn, kind in transition_btns:
                         if btn.handle_event(event, mouse):
                             input_focused = False
+                            pause_focused = False
                             transition = kind
                             for b, k in transition_btns:
                                 b.active = (k == transition)
                             break
                     if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                         input_focused = path_rect.collidepoint(event.pos)
+                        pause_focused = pause_rect.collidepoint(event.pos)
                         if input_focused:
                             cursor_pos = len(path_text)
+                        if pause_focused:
+                            pause_cursor = len(pause_text)
                     elif event.type == pygame.KEYDOWN and input_focused:
                         if event.key == pygame.K_BACKSPACE:
                             if cursor_pos > 0:
@@ -1137,6 +1174,33 @@ class Engine:
                                          event.unicode +
                                          path_text[cursor_pos:])
                             cursor_pos += len(event.unicode)
+                    elif event.type == pygame.KEYDOWN and pause_focused:
+                        if event.key == pygame.K_BACKSPACE:
+                            if pause_cursor > 0:
+                                pause_text = (pause_text[:pause_cursor - 1] +
+                                              pause_text[pause_cursor:])
+                                pause_cursor -= 1
+                        elif event.key == pygame.K_DELETE:
+                            if pause_cursor < len(pause_text):
+                                pause_text = (pause_text[:pause_cursor] +
+                                              pause_text[pause_cursor + 1:])
+                        elif event.key == pygame.K_LEFT:
+                            pause_cursor = max(0, pause_cursor - 1)
+                        elif event.key == pygame.K_RIGHT:
+                            pause_cursor = min(len(pause_text), pause_cursor)
+                        elif event.key == pygame.K_HOME:
+                            pause_cursor = 0
+                        elif event.key == pygame.K_END:
+                            pause_cursor = len(pause_text)
+                        elif (event.unicode and event.unicode.isprintable()
+                              and (event.unicode.isdigit()
+                                   or event.unicode == ".")):
+                            if event.unicode == "." and "." in pause_text:
+                                continue
+                            pause_text = (pause_text[:pause_cursor] +
+                                          event.unicode +
+                                          pause_text[pause_cursor:])
+                            pause_cursor += len(event.unicode)
 
             dim = pygame.Surface(self.screen.get_size(), pygame.SRCALPHA)
             dim.fill((0, 0, 0, 150))
@@ -1173,6 +1237,27 @@ class Engine:
                           (box.x + 24, box.y + 128), size=15)
             for btn, _ in transition_btns:
                 btn.draw(self.screen)
+
+            ui.draw_label(self.screen, "Pause hold - curtain closed (s)",
+                          (box.x + 24, box.y + 204), size=15)
+            pygame.draw.rect(self.screen, (28, 28, 36), pause_rect,
+                             border_radius=5)
+            pause_border = C.COL_ACCENT if pause_focused else C.COL_BUTTON
+            pygame.draw.rect(self.screen, pause_border, pause_rect,
+                             2 if pause_focused else 1, border_radius=5)
+            pause_surf = font.render(pause_text, True, C.COL_TEXT)
+            self.screen.blit(pause_surf,
+                             (pause_rect.x + 8, pause_rect.y + 7))
+            if pause_focused and cursor_timer < 30:
+                pcursor_x = (pause_rect.x + 8 +
+                             font.size(pause_text[:pause_cursor])[0])
+                pygame.draw.line(self.screen, C.COL_ACCENT,
+                                 (pcursor_x, pause_rect.y + 6),
+                                 (pcursor_x, pause_rect.bottom - 7), 2)
+            ui.draw_label(self.screen, "sec.",
+                          (pause_rect.right + 10, pause_rect.y + 9), size=14,
+                          color=C.COL_TEXT_DIM)
+
             fullscreen_btn.draw(self.screen)
 
             if error_msg:

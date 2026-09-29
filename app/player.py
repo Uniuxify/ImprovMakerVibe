@@ -143,10 +143,21 @@ class Runtime:
             self.triggered_sounds.append(ev["sound"])
         elif et == "pause":
             start = ev["t"]
-            dur = ev.get("duration", C.TRANSITION_DURATION)
+            # Fixed open/close animation length; `hold` is how long the
+            # transition stays fully closed (the configurable pause time).
+            anim = C.TRANSITION_DURATION / 2.0
+            hold = ev.get("hold")
+            if hold is None:
+                # backward compatibility: older logs stored the total length
+                total = ev.get("duration", C.TRANSITION_DURATION)
+                hold = max(0.0, total - C.TRANSITION_DURATION)
+            hold = max(0.0, float(hold))
             self.transition = {
                 "kind": ev.get("transition", "curtain"),
-                "start": start, "mid": start + dur / 2.0, "end": start + dur,
+                "start": start,
+                "mid": start + anim,                # fully closed
+                "hold_end": start + anim + hold,    # starts to open
+                "end": start + anim + hold + anim,  # fully open
                 "switch_scene": ev.get("scene"),
             }
 
@@ -188,12 +199,19 @@ class Runtime:
     # ---- drawing ------------------------------------------------------
     def transition_cover(self, t):
         tr = self.transition
-        if not tr or t >= tr["end"]:
+        if not tr or t < tr["start"] or t >= tr["end"]:
             return 0.0, None
         if t < tr["mid"]:
-            cover = (t - tr["start"]) / max(1e-6, (tr["mid"] - tr["start"]))
+            # closing
+            span = max(1e-6, tr["mid"] - tr["start"])
+            cover = (t - tr["start"]) / span
+        elif t < tr["hold_end"]:
+            # fully closed for the configured pause duration
+            cover = 1.0
         else:
-            cover = 1.0 - (t - tr["mid"]) / max(1e-6, (tr["end"] - tr["mid"]))
+            # opening
+            span = max(1e-6, tr["end"] - tr["hold_end"])
+            cover = 1.0 - (t - tr["hold_end"]) / span
         return max(0.0, min(1.0, cover)), tr["kind"]
 
     def render(self, frame_surface, t):

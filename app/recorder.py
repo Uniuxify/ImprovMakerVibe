@@ -87,9 +87,9 @@ class Recorder:
     def log_sound(self, t, name):
         self._add(t, type="sound", sound=name)
 
-    def log_pause(self, t, transition, duration, scene):
+    def log_pause(self, t, transition, hold, scene):
         self._add(t, type="pause", transition=transition,
-                  duration=round(float(duration), 3), scene=scene)
+                  hold=round(float(hold), 3), scene=scene)
 
     def log_scene_change(self, t, scene):
         self._add(t, type="scene_change", scene=scene)
