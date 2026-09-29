@@ -699,13 +699,29 @@ class Engine:
                 self._paste_clipboard()
 
     def _make_unique_sprite_name(self, base_name):
+        """A free name derived from base_name: the base itself when nothing
+        in the stage uses it, otherwise base_copy, base_copy2, ..."""
         all_names = {sp.name for sc in self.stage.scenes for sp in sc.sprites}
+        if base_name not in all_names:
+            return base_name
         candidate = f"{base_name}_copy"
         i = 1
         while candidate in all_names:
             i += 1
             candidate = f"{base_name}_copy{i}"
         return candidate
+
+    def _dedupe_sprite_names(self):
+        """Make every sprite name in the stage unique (the event log keys
+        everything by name, so duplicates would be recorded as one object).
+        Heals scenes that already contain duplicates, e.g. loaded from an
+        older project. Safe to run before recording: the log is still empty."""
+        seen = set()
+        for sc in self.stage.scenes:
+            for sp in sc.sprites:
+                if sp.name in seen:
+                    sp.name = self._make_unique_sprite_name(sp.name)
+                seen.add(sp.name)
 
     def _paste_clipboard(self):
         if not self.clipboard:
@@ -994,6 +1010,10 @@ class Engine:
         self.t = 0.0
         self.scene_changed_in_pause = False
         self.stage.active_index = 0
+        # ensure unique sprite names before snapshotting, otherwise duplicate
+        # instances of one asset would be merged into a single object
+        # during playback (the event log identifies sprites by name)
+        self._dedupe_sprite_names()
         self.recorder.start(self._stage_snapshot())
         self.mic.start()
         self.mode = MODE_RECORD
@@ -1484,8 +1504,12 @@ class Engine:
             dest = C.import_into(p, C.SPRITES_DIR)
             key = self.assets.load_image_file(dest)
             if key and self._logging():
-                sp = Sprite(key, self.assets.get_image(key),
-                            C.MARGIN + 200, C.MARGIN + 200)
+                # unique name so duplicate instances of the same asset stay
+                # distinguishable in the event log (image_key = asset key)
+                sp = Sprite(self._make_unique_sprite_name(key),
+                            self.assets.get_image(key),
+                            C.MARGIN + 200, C.MARGIN + 200,
+                            image_key=key)
                 self.stage.active.add_sprite(sp)
                 self.recorder.log_sprite_add(self._edit_t(), sp)
             if key:
@@ -1546,7 +1570,10 @@ class Engine:
         key = item["key"]
         surf = self.assets.get_image(key)
         wx, wy = self.view.s2w(sx, sy)
-        sp = Sprite(key, surf, wx - surf.get_width() / 2,
+        # every dropped instance gets its own name so the event log can tell
+        # them apart; the picture still comes from image_key (= asset key)
+        sp = Sprite(self._make_unique_sprite_name(key), surf,
+                    wx - surf.get_width() / 2,
                     wy - surf.get_height() / 2, image_key=key)
         self.stage.active.add_sprite(sp)
         self.selected = sp
