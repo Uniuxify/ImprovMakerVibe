@@ -1,4 +1,5 @@
 """Application engine: main loop, modes, input handling and rendering."""
+import math
 import os
 import time
 
@@ -14,7 +15,7 @@ from .assets_lib import Assets
 from .sound import SoundManager
 from .mic import MicRecorder
 from .scene import Scene
-from .sprite import Sprite, HANDLE_TOL
+from .sprite import Sprite, HANDLE_TOL, rotate_point
 from .view import View
 from .recorder import Recorder
 from .player import Player
@@ -31,6 +32,9 @@ MODE_EXPORT = "EXPORT"
 # Screen-pixel pad around the group frame so its handles never coincide with
 # the handles of the individual sprites inside the group.
 GROUP_BOX_PAD = 20
+# Screen-pixel radius around a corner handle (outside the handle square)
+# that starts the rotate gesture instead of resize/select.
+ROTATE_TOL = 30
 # Frame/handle colour used for the selection in "show hitboxes" mode.
 COL_SELECTED = (225, 70, 70)
 # Frame/handle colour for unselected objects when hitboxes are always on.
@@ -125,8 +129,14 @@ class Engine:
         self.clipboard = []             # list of copied sprite dicts
         self.resizing = None            # Sprite being resized
         self.resize_handle = None
+        self._resize_center = (0.0, 0.0)  # sprite centre at resize start
+        self._resize_angle = 0.0          # sprite angle at resize start
         self._group_snap = None         # {sprite: (x, y, sx, sy)} group resize
         self._group_start_box = None    # group frame bounds at drag start
+        self.rotating = None            # list of sprites being rotated
+        self._rot_snap = None           # {sprite: (angle0, x0, y0)} rotate
+        self._rot_center = (0.0, 0.0)   # rotate pivot (world)
+        self._rot_start = 0.0           # mouse angle (rad) at gesture start
         self._pin_x = 0.0
         self._pin_side_x = None         # "left" or "right"
         self._pin_y = 0.0
@@ -487,6 +497,19 @@ class Engine:
             "bottom_right": (x2, y2),
         }
 
+    @staticmethod
+    def _near_corner(wx, wy, corners, tol, rot_tol):
+        """True when (wx, wy) is outside the handle square (tol) but within
+        rot_tol of a corner point — the grab zone of the rotate gesture."""
+        for name in ("top_left", "top_right", "bottom_left",
+                     "bottom_right"):
+            hx, hy = corners[name]
+            if abs(wx - hx) <= tol and abs(wy - hy) <= tol:
+                continue    # that is the resize handle itself
+            if math.hypot(wx - hx, wy - hy) <= rot_tol:
+                return True
+        return False
+
     def _group_bounds(self, sprites=None):
         """Union of the given sprites' rectangles (world space), or None."""
         if sprites is None:
@@ -572,6 +595,7 @@ class Engine:
             sel = self._selection_sprites()
             group_box = self._group_box(sel)
             tol = HANDLE_TOL / self.view.scale
+            rot_tol = ROTATE_TOL / max(self.view.scale, 1e-6)
 
             # 1. Group frame: flip buttons + resize handles (multi-select).
             #    Checked before everything else so group controls win over
@@ -589,6 +613,16 @@ class Engine:
                     if abs(wx - hx) <= tol and abs(wy - hy) <= tol:
                         self._start_group_resize(group_box, sel, name)
                         return
+                # rotation: near a corner of the group frame, outside its
+                # handle -> the whole group turns around the group centre
+                if self._near_corner(wx, wy,
+                                     self._box_handle_points(*group_box),
+                                     tol, rot_tol):
+                    bx1, by1, bx2, by2 = self._group_bounds(sel)
+                    self._start_rotation(sel,
+                                         ((bx1 + bx2) / 2.0,
+                                          (by1 + by2) / 2.0), wx, wy)
+                    return
 
             # 2. Individual flip buttons and resize handles.
             #    With "show hitboxes" every sprite exposes them; otherwise
@@ -614,6 +648,12 @@ class Engine:
                 handle = sp.hit_handle(wx, wy, tol=tol)
                 if handle is not None:
                     self._start_resize(sp, handle)
+                    return
+            # rotation zone just outside a sprite's corner handles
+            for sp in candidates:
+                if self._near_corner(wx, wy, sp.handle_points(),
+                                     tol, rot_tol):
+                    self._start_rotation([sp], sp.center, wx, wy)
                     return
 
             # 3. Sprite selection & multi-select
@@ -653,7 +693,9 @@ class Engine:
                 self.marquee_end = (sx, sy)
                 return
             wx, wy = self.view.s2w(sx, sy)
-            if self._group_snap is not None and self._editable():
+            if self.rotating and self._editable():
+                self._rotate_to(wx, wy)
+            elif self._group_snap is not None and self._editable():
                 self._group_resize_to(wx, wy)
             elif self.resizing is not None and self._editable():
                 self._resize_to(wx, wy)
@@ -676,11 +718,19 @@ class Engine:
                 for s in self.dragging_sprites:
                     self.recorder.log_move(self._edit_t(), s, s.x, s.y,
                                            force=True)
+            if self.rotating and self._logging():
+                for s in self.rotating:
+                    self.recorder.log_rotate(self._edit_t(), s, s.angle,
+                                             force=True)
+                    self.recorder.log_move(self._edit_t(), s, s.x, s.y,
+                                           force=True)
             self.dragging_sprites = []
             self.resizing = None
             self.resize_handle = None
             self._group_snap = None
             self._group_start_box = None
+            self.rotating = None
+            self._rot_snap = None
 
         elif event.type == pygame.KEYDOWN and self._editable():
             mods = pygame.key.get_mods()
@@ -736,7 +786,8 @@ class Engine:
                         scale_x=d.get("scale_x", 1.0),
                         scale_y=d.get("scale_y", 1.0),
                         flip_x=d.get("flip_x", False),
-                        flip_y=d.get("flip_y", False))
+                        flip_y=d.get("flip_y", False),
+                        angle=d.get("angle", 0.0))
             self.stage.active.add_sprite(sp)
             if self._logging():
                 self.recorder.log_sprite_add(self._edit_t(), sp)
@@ -771,6 +822,10 @@ class Engine:
     def _start_resize(self, sp, handle):
         self.resizing = sp
         self.resize_handle = handle
+        # snapshot for rotated resize: the mouse is inverse-rotated around
+        # this centre into the sprite's local space before the scale math
+        self._resize_center = sp.center
+        self._resize_angle = sp.angle
         self._pin_x = 0.0
         self._pin_side_x = None
         self._pin_y = 0.0
@@ -796,6 +851,12 @@ class Engine:
         h = self.resize_handle
         if sp is None or h is None:
             return
+
+        if abs(self._resize_angle) > 1e-9:
+            # map the mouse into the sprite's unrotated space so the resize
+            # math works on the same axes as the (rotated) handle
+            cx, cy = self._resize_center
+            wx, wy = rotate_point(wx, wy, cx, cy, -self._resize_angle)
 
         is_shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
         new_w = sp.w
@@ -843,6 +904,46 @@ class Engine:
                                     anchor_side_x=self._pin_side_x,
                                     anchor_y=self._pin_y if self._pin_side_y else None,
                                     anchor_side_y=self._pin_side_y)
+
+    # ---- rotation ------------------------------------------------------
+    def _start_rotation(self, sprites, center, wx, wy):
+        """Begin a rotate gesture. A single sprite turns around its own
+        centre; a group turns around the group centre and its members
+        orbit around it."""
+        self.rotating = list(sprites)
+        self._rot_snap = {sp: (sp.angle, sp.x, sp.y) for sp in sprites}
+        self._rot_center = (float(center[0]), float(center[1]))
+        cx, cy = self._rot_center
+        self._rot_start = math.atan2(wy - cy, wx - cx)
+        self.dragging_sprites = []
+        if self._logging():
+            for sp in sprites:
+                self.recorder.log_rotate(self._edit_t(), sp, sp.angle,
+                                         force=True)
+
+    def _rotate_to(self, wx, wy):
+        snaps = self._rot_snap
+        if not snaps:
+            return
+        cx, cy = self._rot_center
+        # atan2 in screen space grows clockwise; negate so dragging the
+        # mouse counter-clockwise turns the sprite counter-clockwise
+        delta = math.degrees(self._rot_start -
+                             math.atan2(wy - cy, wx - cx))
+        orbit = len(self.rotating) > 1
+        for sp, (a0, x0, y0) in snaps.items():
+            sp.set_angle(a0 + delta)
+            if orbit:
+                # the sprite centre orbits the group centre
+                c0x, c0y = x0 + sp.w / 2.0, y0 + sp.h / 2.0
+                nx, ny = rotate_point(c0x, c0y, cx, cy, delta)
+                sp.x = nx - sp.w / 2.0
+                sp.y = ny - sp.h / 2.0
+            if self._logging():
+                self.recorder.log_rotate(self._edit_t(), sp, sp.angle)
+                if orbit:
+                    self.recorder.log_move(self._edit_t(), sp, sp.x, sp.y,
+                                           force=True)
 
     # ---- group resize (multi-selection) --------------------------------
     def _start_group_resize(self, box, sprites, handle):
@@ -1643,15 +1744,17 @@ class Engine:
         self.panels.panels["Backgrounds"].active_key = \
             self.stage.active.bg_key
 
-    def _blit_world(self, surf, wx, wy):
-        """Blit a world-space surface at world (wx, wy), applying view zoom."""
-        sx, sy = self.view.w2s(wx, wy)
+    def _blit_world_centered(self, surf, cx, cy):
+        """Blit a world-space surface centred on world point (cx, cy),
+        applying view zoom. Used for rotated sprites: `rot_image` turns
+        around the centre of the unrotated rectangle."""
         scale = self.view.scale
         if scale != 1.0:
             w = max(1, int(round(surf.get_width() * scale)))
             h = max(1, int(round(surf.get_height() * scale)))
             surf = pygame.transform.smoothscale(surf, (w, h))
-        self.screen.blit(surf, (int(sx), int(sy)))
+        scx, scy = self.view.w2s(cx, cy)
+        self.screen.blit(surf, surf.get_rect(center=(scx, scy)))
 
 
     def _draw_stage(self):
@@ -1680,9 +1783,9 @@ class Engine:
                     bg = sc.background
                 self.screen.blit(bg, (int(fx), int(fy)))
 
-            # sprites: world-space at their own coordinates
+            # sprites: world-space, rotated around their centre
             for sp in sc.sprites:
-                self._blit_world(sp.image, sp.x, sp.y)
+                self._blit_world_centered(sp.rot_image, *sp.center)
 
             # transition overlay over the frame
             cover = self._current_cover()
@@ -1765,10 +1868,25 @@ class Engine:
                       size=13, color=color if flip_v else C.COL_TEXT)
 
     def _draw_sprite_frame(self, sp, color, handles=False, flip=False):
-        """Frame (plus optional handles / flip buttons) for one sprite."""
-        box = (sp.x, sp.y, sp.x + sp.w, sp.y + sp.h)
-        self._draw_box_frame(box, color, handles=handles, flip=flip,
-                             flip_h=sp.flip_x, flip_v=sp.flip_y)
+        """Frame (plus optional handles / flip buttons) for one sprite.
+
+        The outline and the handles follow the sprite's rotation; the flip
+        buttons stay under the axis-aligned box."""
+        pts = sp.handle_points()
+        corners = [pts["top_left"], pts["top_right"],
+                   pts["bottom_right"], pts["bottom_left"]]
+        poly = [self.view.w2s(px, py) for px, py in corners]
+        pygame.draw.polygon(self.screen, color, poly, 2)
+        if handles:
+            for hx, hy in pts.values():
+                hxs, hys = self.view.w2s(hx, hy)
+                r = pygame.Rect(0, 0, 10, 10)
+                r.center = (int(hxs), int(hys))
+                pygame.draw.rect(self.screen, color, r)
+                pygame.draw.rect(self.screen, (255, 255, 255), r, 1)
+        if flip:
+            box = (sp.x, sp.y, sp.x + sp.w, sp.y + sp.h)
+            self._draw_flip_buttons(box, color, sp.flip_x, sp.flip_y)
 
     def _draw_box_frame(self, box, color, handles=False, flip=False,
                         flip_h=False, flip_v=False):

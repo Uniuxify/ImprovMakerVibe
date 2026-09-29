@@ -50,6 +50,7 @@ class Recorder:
         self.log = EventLog()
         self._last_pos = {}     # sprite name -> (x, y) last logged
         self._last_scale = {}   # sprite name -> (sx, sy) last logged
+        self._last_angle = {}   # sprite name -> angle last logged
         self._recording = False
 
     @property
@@ -61,6 +62,7 @@ class Recorder:
         self.log.start_state = copy.deepcopy(stage_snapshot_dict)
         self._last_pos = {}
         self._last_scale = {}
+        self._last_angle = {}
         self._recording = True
 
     def stop(self, duration):
@@ -101,10 +103,12 @@ class Recorder:
         self._add(t, type="sprite_add", sprite=sprite.name,
                 image=sprite.image_key, x=sprite.x, y=sprite.y,
                 scale_x=sprite.scale_x, scale_y=sprite.scale_y,
-                flip_x=sprite.flip_x, flip_y=sprite.flip_y)
+                flip_x=sprite.flip_x, flip_y=sprite.flip_y,
+                angle=round(float(sprite.angle), 2))
         self._last_pos[sprite.name] = (sprite.x, sprite.y)
         self._last_scale[sprite.name] = (round(sprite.scale_x, 4),
                                      round(sprite.scale_y, 4))
+        self._last_angle[sprite.name] = round(float(sprite.angle), 2)
 
     def log_flip(self, t, sprite, flip_x, flip_y):
         self._add(t, type="flip", sprite=sprite.name,
@@ -112,6 +116,18 @@ class Recorder:
 
     def log_z_order(self, t, sprite, action):
         self._add(t, type="z_order", sprite=sprite.name, action=str(action))
+
+    def log_rotate(self, t, sprite, angle, force=False):
+        """Log a rotation keyframe (degrees). Deduplicated by the last
+        logged angle, like move/scale; `force` always writes (gesture
+        start/end)."""
+        key = sprite.name
+        a = round(float(angle), 2)
+        prev = self._last_angle.get(key)
+        if not force and prev is not None and prev == a:
+            return
+        self._last_angle[key] = a
+        self._add(t, type="rotate", sprite=key, angle=a)
 
     def log_scale(self, t, sprite, scale_x, scale_y,
                 anchor_x=None, anchor_side_x=None,
@@ -140,3 +156,4 @@ class Recorder:
         self._add(t, type="sprite_remove", sprite=sprite.name)
         self._last_pos.pop(sprite.name, None)
         self._last_scale.pop(sprite.name, None)
+        self._last_angle.pop(sprite.name, None)

@@ -62,6 +62,11 @@ def main():
             "t": round(t, 3), "type": "move", "sprite": "hero",
             "x": C.MARGIN + 100 + i * 20, "y": C.MARGIN + 100 + i * 5,
         })
+        # rotate 0 -> 90 degrees alongside the move (exercises the export)
+        log.events.append({
+            "t": round(t, 3), "type": "rotate", "sprite": "hero",
+            "angle": round(i * 4.5, 2),
+        })
     log.events.append({"t": 2.5, "type": "pause", "transition": "fade",
                        "hold": 0.0, "scene": "scene2"})
     log.events.append({"t": 3.4, "type": "background",
@@ -79,6 +84,11 @@ def main():
     ok_interp = abs(sp.x - exp_x) < 1.5
     print(f"[check] interp@1.0s x={sp.x:.1f} expected~{exp_x} "
           f"-> {'OK' if ok_interp else 'FAIL'}")
+
+    # --- verify rotation interpolation (Recorder->Runtime) -----------
+    ok_rot = abs(sp.angle - 45.0) < 2.0
+    print(f"[check] rot@1.0s angle={sp.angle:.1f} expected~45 "
+          f"-> {'OK' if ok_rot else 'FAIL'}")
 
     # --- verify transition cover peaks ----------------------------
     runtime.update_to(2.5 + C.TRANSITION_DURATION / 2)
@@ -197,6 +207,40 @@ def main():
           f"mid={mid_cover:.2f} after={open_cover:.2f} "
           f"-> {'OK' if ok_hold else 'FAIL'}")
 
+    # --- shortest-arc angle interpolation across the ±180 seam -------
+    log5 = EventLog()
+    log5.start_state = {
+        "scenes": [{"name": "scene1", "background": "gradient_sky",
+                    "sprites": [{"name": "hero", "image": "hero",
+                                 "x": 100.0, "y": 100.0,
+                                 "angle": 170.0}]}]
+    }
+    log5.events.append({"t": 0.0, "type": "rotate", "sprite": "hero",
+                        "angle": 170.0})
+    # -170 is +20 deg through 180 (shortest arc), NOT -340 deg the other way
+    log5.events.append({"t": 0.05, "type": "rotate", "sprite": "hero",
+                        "angle": -170.0})
+    log5.duration = 0.1
+    rt5 = Runtime(log5, assets)
+    rt5.update_to(0.025)
+    a_mid = rt5.active.sprite_by_name("hero").angle
+    ok_seam = abs(abs(a_mid) - 180.0) < 1.0
+    print(f"[check] shortest-arc seam mid={a_mid:.1f} expected~±180 "
+          f"-> {'OK' if ok_seam else 'FAIL'}")
+
+    # --- rotated render (draw_frame path used by playback + export) ---
+    frame = pygame.Surface((C.FRAME_W, C.FRAME_H))
+    rt5.update_to(0.1)
+    rt5.active.sprite_by_name("hero").set_angle(90.0)
+    try:
+        rt5.render(frame, 0.1)
+        ok_render = True
+    except Exception as exc:
+        ok_render = False
+        print(f"[check] rotated render raised: {exc}")
+    print(f"[check] rotated render angle=90 -> "
+          f"{'OK' if ok_render else 'FAIL'}")
+
     # --- export ----------------------------------------------------
     out = os.path.join(C.PROJECTS_DIR, "selftest.mp4")
     if not exporter.is_available():
@@ -209,9 +253,9 @@ def main():
     print(f"[check] exported {out} ({size} bytes) "
           f"-> {'OK' if size > 2000 else 'FAIL'}")
 
-    all_ok = (ok_interp and ok_cover and ok_scene and ok_bg and ok_scale
-              and ok_flip and ok_pin and ok_pause_add and ok_hold
-              and size > 2000)
+    all_ok = (ok_interp and ok_rot and ok_cover and ok_scene and ok_bg
+              and ok_scale and ok_flip and ok_pin and ok_pause_add
+              and ok_hold and ok_seam and ok_render and size > 2000)
     print("[result]", "ALL OK" if all_ok else "SOME CHECKS FAILED")
     return 0 if all_ok else 1
 

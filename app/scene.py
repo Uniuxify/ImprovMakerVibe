@@ -69,7 +69,9 @@ class Scene:
         else:
             dest.fill((0, 0, 0))
         for sp in self.sprites:
-            dest.blit(sp.image, (int(sp.x) - C.MARGIN, int(sp.y) - C.MARGIN))
+            # rotation-aware: the rotated surface is centred on the sprite's
+            # rectangle, identical to blitting image at (x, y) when angle == 0
+            sp.blit(dest, -C.MARGIN, -C.MARGIN)
 
     def to_dict(self):
         return {

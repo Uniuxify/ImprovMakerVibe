@@ -25,6 +25,7 @@ class Runtime:
         self.active = None
         self.tracks = {}                # scene -> sprite -> [(t,x,y)]
         self.scale_tracks = {}          # scene -> sprite -> [(t,sx,sy)]
+        self.angle_tracks = {}          # scene -> sprite -> [(t,angle)]
         self.events = sorted(log.events, key=lambda e: e["t"])
         self.duration = log.duration
         self._idx = 0
@@ -47,7 +48,8 @@ class Runtime:
                             scale_x=spr.get("scale_x", 1.0),
                             scale_y=spr.get("scale_y", 1.0),
                             flip_x=spr.get("flip_x", False),
-                            flip_y=spr.get("flip_y", False))
+                            flip_y=spr.get("flip_y", False),
+                            angle=spr.get("angle", 0.0))
                 sc.sprites.append(sp)
             self.scenes[sc.name] = sc
         if not self.scenes:
@@ -74,6 +76,10 @@ class Runtime:
                 tr.append((ev["t"],
                            ev.get("scale_x", 1.0),
                            ev.get("scale_y", 1.0)))
+            elif et == "rotate":
+                tr = self.angle_tracks.setdefault(
+                    cur, {}).setdefault(ev["sprite"], [])
+                tr.append((ev["t"], ev.get("angle", 0.0)))
 
     # ---- runtime stepping --------------------------------------------
     def reset(self):
@@ -127,6 +133,10 @@ class Runtime:
             sp = self.active.sprite_by_name(ev["sprite"])
             if sp is not None:
                 sp.set_flip(ev.get("flip_x"), ev.get("flip_y"))
+        elif et == "rotate":
+            sp = self.active.sprite_by_name(ev["sprite"])
+            if sp is not None:
+                sp.set_angle(ev.get("angle", 0.0))
         elif et == "z_order":
             sp = self.active.sprite_by_name(ev["sprite"])
             if sp is not None:
@@ -171,7 +181,8 @@ class Runtime:
                     scale_x=ev.get("scale_x", 1.0),
                     scale_y=ev.get("scale_y", 1.0),
                     flip_x=ev.get("flip_x", False),
-                    flip_y=ev.get("flip_y", False))
+                    flip_y=ev.get("flip_y", False),
+                    angle=ev.get("angle", 0.0))
         sc.sprites.append(sp)
 
     def _remove_sprite(self, ev):
@@ -195,6 +206,12 @@ class Runtime:
                 continue
             sx, sy = _lerp_scale(tr, t)
             sp.set_scale(sx, sy)
+        # rotation: shortest-arc interpolation, same gap-hold as scale
+        for name, tr in self.angle_tracks.get(scene, {}).items():
+            sp = self.active.sprite_by_name(name)
+            if sp is None or not tr:
+                continue
+            sp.set_angle(_lerp_angle(tr, t))
 
     # ---- drawing ------------------------------------------------------
     def transition_cover(self, t):
@@ -243,6 +260,34 @@ def _lerp_track(tr, t):
         return x0, y0
     a = (t - t0) / span
     return x0 + (x1 - x0) * a, y0 + (y1 - y0) * a
+
+
+def _lerp_angle(tr, t):
+    """Interpolate angles along the shortest arc; hold across gaps (same
+    rule as scale: dense rotate bursts animate, separate gestures do not)."""
+    if t <= tr[0][0]:
+        return tr[0][1]
+    if t >= tr[-1][0]:
+        return tr[-1][1]
+    lo, hi = 0, len(tr) - 1
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if tr[mid][0] <= t:
+            lo = mid
+        else:
+            hi = mid
+    t0, a0 = tr[lo]
+    t1, a1 = tr[hi]
+    gap = t1 - t0
+    if gap > C.TRACK_LERP_MAX_GAP:
+        # разные жесты вращения — держим значение левого события
+        return a0
+    if gap <= 1e-6:
+        return a1
+    # signed shortest-arc difference in (-180, 180]
+    diff = (a1 - a0 + 180.0) % 360.0 - 180.0
+    a = (t - t0) / gap
+    return a0 + diff * a
 
 
 def _lerp_scale(tr, t):

@@ -126,7 +126,8 @@ def load_project(path, assets, sound_manager):
                                      scale_x=spr.get("scale_x", 1.0),
                                      scale_y=spr.get("scale_y", 1.0),
                                      flip_x=spr.get("flip_x", False),
-                                     flip_y=spr.get("flip_y", False)))
+                                     flip_y=spr.get("flip_y", False),
+                                     angle=spr.get("angle", 0.0)))
         stage.scenes.append(sc)
     if not stage.scenes:
         stage.scenes = [Scene("scene1")]
