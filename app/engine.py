@@ -69,7 +69,7 @@ class Engine:
                                              self._window_flags())
         if not self.fullscreen:
             self._maximize_window()
-        pygame.display.set_caption("Scene Puppet")
+        pygame.display.set_caption("Improv Maker")
         self.clock = pygame.time.Clock()
 
         self.sm = SoundManager()
