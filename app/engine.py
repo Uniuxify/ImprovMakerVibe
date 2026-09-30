@@ -129,8 +129,10 @@ class Engine:
         self.clipboard = []             # list of copied sprite dicts
         self.resizing = None            # Sprite being resized
         self.resize_handle = None
-        self._resize_center = (0.0, 0.0)  # sprite centre at resize start
+        self._resize_anchor = (0.0, 0.0)  # pinned corner (world) at start
         self._resize_angle = 0.0          # sprite angle at resize start
+        self._resize_w0 = 1               # sprite width at resize start
+        self._resize_h0 = 1               # sprite height at resize start
         self._group_snap = None         # {sprite: (x, y, sx, sy)} group resize
         self._group_start_box = None    # group frame bounds at drag start
         self.rotating = None            # list of sprites being rotated
@@ -475,7 +477,15 @@ class Engine:
         return btn_h, btn_v
 
     def _flip_buttons(self, sp):
-        return self._flip_buttons_rect(sp.x, sp.y, sp.x + sp.w, sp.y + sp.h)
+        """Flip buttons under the midpoint of the sprite's CURRENT bottom
+        edge (the rotated hitbox edge, not the angle-0 AABB)."""
+        bx, by = sp.handle_points()["bottom"]
+        sx, sy = self.view.w2s(bx, by)
+        btn_h = pygame.Rect(0, 0, 58, 22)
+        btn_v = pygame.Rect(0, 0, 58, 22)
+        btn_h.center = (int(sx) - 31, int(sy) + 19)
+        btn_v.center = (int(sx) + 31, int(sy) + 19)
+        return btn_h, btn_v
 
     def _selection_sprites(self):
         """Selected sprites that still belong to the active scene."""
@@ -822,9 +832,6 @@ class Engine:
     def _start_resize(self, sp, handle):
         self.resizing = sp
         self.resize_handle = handle
-        # snapshot for rotated resize: the mouse is inverse-rotated around
-        # this centre into the sprite's local space before the scale math
-        self._resize_center = sp.center
         self._resize_angle = sp.angle
         self._pin_x = 0.0
         self._pin_side_x = None
@@ -846,33 +853,55 @@ class Engine:
             self._pin_y = float(round(sp.y + sp.h))
             self._pin_side_y = "bottom"
 
+        # rotated resize: the visual anchor is rotate(pinned_local, centre,
+        # angle); snapshot where it sits on screen so the drag can keep it
+        # fixed while the opposite edges follow the mouse
+        cx, cy = sp.center
+        ax = self._pin_x if self._pin_side_x else cx
+        ay = self._pin_y if self._pin_side_y else cy
+        self._resize_anchor = rotate_point(ax, ay, cx, cy, sp.angle)
+        self._resize_w0 = sp.w
+        self._resize_h0 = sp.h
+
     def _resize_to(self, wx, wy):
         sp = self.resizing
         h = self.resize_handle
         if sp is None or h is None:
             return
 
-        if abs(self._resize_angle) > 1e-9:
-            # map the mouse into the sprite's unrotated space so the resize
-            # math works on the same axes as the (rotated) handle
-            cx, cy = self._resize_center
-            wx, wy = rotate_point(wx, wy, cx, cy, -self._resize_angle)
+        # Solve the resize directly from the gesture snapshot (no feedback
+        # from the previous frame, so rotated resizing never drifts or
+        # jitters). The vector from the pinned corner — fixed on screen at
+        # A0 — to the mouse is projected onto the rotated drag axes to get
+        # the new size; the sprite is then placed so the pinned corner stays
+        # exactly at A0. At angle == 0 this is the classic
+        # "drag an edge, pin the opposite side" math.
+        angle = self._resize_angle
+        a = math.radians(angle)
+        # unit vectors of the local +x / +y axes on screen (CCW like pygame)
+        ex = (math.cos(a), -math.sin(a))
+        ey = (math.sin(a), math.cos(a))
+        vx = wx - self._resize_anchor[0]
+        vy = wy - self._resize_anchor[1]
 
         is_shift = bool(pygame.key.get_mods() & pygame.KMOD_SHIFT)
-        new_w = sp.w
-        new_h = sp.h
 
-        # Compute raw desired width
+        # desired new size along the rotated axes
+        proj_x = vx * ex[0] + vy * ex[1]
+        proj_y = vx * ey[0] + vy * ey[1]
         if self._pin_side_x == "left":
-            new_w = max(1, round(wx) - int(self._pin_x))
+            new_w = max(1, round(proj_x))
         elif self._pin_side_x == "right":
-            new_w = max(1, int(self._pin_x) - round(wx))
+            new_w = max(1, round(-proj_x))
+        else:
+            new_w = self._resize_w0
 
-        # Compute raw desired height
         if self._pin_side_y == "top":
-            new_h = max(1, round(wy) - int(self._pin_y))
+            new_h = max(1, round(proj_y))
         elif self._pin_side_y == "bottom":
-            new_h = max(1, int(self._pin_y) - round(wy))
+            new_h = max(1, round(-proj_y))
+        else:
+            new_h = self._resize_h0
 
         # Proportional resize if Shift is held or corner handle with Shift
         if is_shift and (self._pin_side_x is not None) and (self._pin_side_y is not None):
@@ -885,16 +914,22 @@ class Engine:
         scale_y = (new_h / sp.orig_h) if self._pin_side_y else sp.scale_y
         sp.set_scale(scale_x, scale_y)
 
-        # Reposition sprite so pinned edges remain completely stable
-        if self._pin_side_x == "left":
-            sp.x = self._pin_x
-        elif self._pin_side_x == "right":
-            sp.x = self._pin_x - sp.w
-
-        if self._pin_side_y == "top":
-            sp.y = self._pin_y
-        elif self._pin_side_y == "bottom":
-            sp.y = self._pin_y - sp.h
+        # Place the sprite so the pinned point P (fraction 0 / 0.5 / 1 of
+        # the rectangle) lands on A0. The centre offset C - P is
+        # (+-w/2, +-h/2) in local space, so  P = A0 + R(d) - d.
+        dx = (sp.w / 2.0 if self._pin_side_x == "left" else
+              -sp.w / 2.0 if self._pin_side_x == "right" else 0.0)
+        dy = (sp.h / 2.0 if self._pin_side_y == "top" else
+              -sp.h / 2.0 if self._pin_side_y == "bottom" else 0.0)
+        rx, ry = rotate_point(dx, dy, 0.0, 0.0, angle)
+        px = self._resize_anchor[0] + rx - dx
+        py = self._resize_anchor[1] + ry - dy
+        sp.x = (px if self._pin_side_x == "left" else
+                px - sp.w if self._pin_side_x == "right"
+                else px - sp.w / 2.0)
+        sp.y = (py if self._pin_side_y == "top" else
+                py - sp.h if self._pin_side_y == "bottom"
+                else py - sp.h / 2.0)
 
         if self._logging():
             self.recorder.log_move(self._edit_t(), sp, sp.x, sp.y, force=True)
@@ -1852,9 +1887,8 @@ class Engine:
             pygame.draw.rect(self.screen, color, r)
             pygame.draw.rect(self.screen, (255, 255, 255), r, 1)
 
-    def _draw_flip_buttons(self, box, color, flip_h, flip_v):
-        """Flip H / Flip V buttons below a world-space box."""
-        btn_h, btn_v = self._flip_buttons_rect(*box)
+    def _draw_flip_buttons(self, btn_h, btn_v, color, flip_h, flip_v):
+        """Flip H / Flip V buttons at the given screen rectangles."""
         pygame.draw.rect(self.screen, C.COL_BUTTON, btn_h, border_radius=4)
         pygame.draw.rect(self.screen, color if flip_h else (100, 104, 120),
                          btn_h, 1, border_radius=4)
@@ -1885,8 +1919,8 @@ class Engine:
                 pygame.draw.rect(self.screen, color, r)
                 pygame.draw.rect(self.screen, (255, 255, 255), r, 1)
         if flip:
-            box = (sp.x, sp.y, sp.x + sp.w, sp.y + sp.h)
-            self._draw_flip_buttons(box, color, sp.flip_x, sp.flip_y)
+            self._draw_flip_buttons(*self._flip_buttons(sp), color,
+                                    sp.flip_x, sp.flip_y)
 
     def _draw_box_frame(self, box, color, handles=False, flip=False,
                         flip_h=False, flip_v=False):
@@ -1899,7 +1933,8 @@ class Engine:
         if handles:
             self._draw_handles(box, color)
         if flip:
-            self._draw_flip_buttons(box, color, flip_h, flip_v)
+            self._draw_flip_buttons(*self._flip_buttons_rect(*box),
+                                    color, flip_h, flip_v)
 
     def _current_cover(self):
         # No transition overlay while authoring (recording/pausing/resuming):

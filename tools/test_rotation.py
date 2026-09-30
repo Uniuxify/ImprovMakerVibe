@@ -1,11 +1,13 @@
 """Headless focus test for the sprite rotation feature.
 
 Exercises the engine rotate gesture (single sprite + group orbit), the
-rotated hitbox / handle points, and the project save/load round-trip.
+rotated hitbox / handle points, rotated resizing (correct edges, no
+jitter), flip-button anchoring and the project save/load round-trip.
 Run with:
 
     python tools/test_rotation.py
 """
+import math
 import os
 import shutil
 import sys
@@ -161,6 +163,169 @@ def test_group_rotation(eng):
     ])
 
 
+def test_rotated_resize(eng):
+    """Resizing a rotated object follows the VISIBLE edges: the pinned
+    corner stays where it is on screen, the dragged edge follows the mouse."""
+    hero = _ensure_hero(eng)
+
+    # -- 180 degrees: grabbing the east handle and dragging east must grow
+    #    the east edge, not the west one
+    x0, y0 = (int(v) for v in eng.view.s2w(300, 400))
+    sp = Sprite("rs180", hero, x0, y0, image_key="hero", angle=180.0)
+    eng.stage.active.add_sprite(sp)
+    eng.selected_sprites = [sp]
+    east = sp.handle_points()["left"]          # rotated: "left" sits east
+    _press(eng, *east)
+    ok_grab = eng.resize_handle == "left"
+    _motion(eng, east[0] + 40.0, east[1])
+    # footprint at 180 deg is still [x, x+w] in x: west (anchor) fixed,
+    # east grew by the drag amount
+    ok_180 = (abs(sp.x - x0) < 2.0 and
+              abs(sp.x + sp.w - (x0 + 120.0 + 40.0)) < 2.0)
+    _release(eng, east[0] + 40.0, east[1])
+    ok_ended1 = eng.resizing is None
+    eng.stage.active.remove_sprite(sp)
+
+    # -- 90 degrees: non-square sprite, the "right" handle points NORTH;
+    #    the south edge is pinned, the north edge must follow the mouse
+    surf = pygame.Surface((200, 100), pygame.SRCALPHA)
+    surf.fill((200, 60, 60, 255))
+    sp2 = Sprite("rs90", surf, x0, y0, angle=90.0)
+    eng.stage.active.add_sprite(sp2)
+    eng.selected_sprites = [sp2]
+    north = sp2.handle_points()["right"]
+    a0 = rotate_point(x0, y0 + 50.0, *sp2.center, 90.0)   # south anchor
+    _press(eng, *north)
+    ok_grab2 = eng.resize_handle == "right"
+    target = (north[0], north[1] - 30.0)                  # drag north
+    _motion(eng, *target)
+    anchor_now = rotate_point(sp2.x, sp2.y + sp2.h / 2.0, *sp2.center, 90.0)
+    dragged = rotate_point(sp2.x + sp2.w, sp2.y + sp2.h / 2.0,
+                           *sp2.center, 90.0)
+    ok_90 = (abs(anchor_now[0] - a0[0]) < 2.0 and
+             abs(anchor_now[1] - a0[1]) < 2.0 and
+             abs(dragged[0] - target[0]) < 2.0 and
+             abs(dragged[1] - target[1]) < 2.0)
+    _release(eng, *target)
+    ok_ended2 = eng.resizing is None
+    eng.stage.active.remove_sprite(sp2)
+
+    # -- 0 degrees regression: dragging bottom-right moves that corner only
+    sp3 = Sprite("rs0", hero, x0, y0, image_key="hero", angle=0.0)
+    eng.stage.active.add_sprite(sp3)
+    eng.selected_sprites = [sp3]
+    br = sp3.handle_points()["bottom_right"]
+    _press(eng, *br)
+    ok_grab3 = eng.resize_handle == "bottom_right"
+    t3 = (br[0] + 30.0, br[1] + 20.0)
+    _motion(eng, *t3)
+    ok_0 = (abs(sp3.x - x0) < 2.0 and abs(sp3.y - y0) < 2.0 and
+            abs(sp3.w - 150.0) < 2.0 and abs(sp3.h - 140.0) < 2.0)
+    _release(eng, *t3)
+    eng.stage.active.remove_sprite(sp3)
+    eng.selected_sprites = []
+    return _report("rotated resize", [
+        ("180 deg handle grabbed", ok_grab),
+        ("180 deg east drag grows east", ok_180),
+        ("180 deg gesture ended", ok_ended1),
+        ("90 deg handle grabbed", ok_grab2),
+        ("90 deg anchor fixed + edge follows mouse", ok_90),
+        ("90 deg gesture ended", ok_ended2),
+        ("0 deg regression: corner drag", ok_0),
+        ("0 deg handle grabbed", ok_grab3),
+    ])
+
+
+def test_resize_no_jitter(eng):
+    """Resizing a rotated object must not jitter: the new size and the
+    anchor are derived from the gesture snapshot + current mouse only, so
+    repeated motion events at the SAME point never change them."""
+    surf = pygame.Surface((200, 100), pygame.SRCALPHA)
+    surf.fill((60, 120, 200, 255))
+    x0, y0 = (int(v) for v in eng.view.s2w(300, 400))
+    sp = Sprite("jit", surf, x0, y0, angle=45.0)
+    eng.stage.active.add_sprite(sp)
+    eng.selected_sprites = [sp]
+    corner = sp.handle_points()["bottom_right"]
+    anchor0 = sp.handle_points()["top_left"]          # pinned opposite corner
+    target = (corner[0] + 40.0, corner[1] + 15.0)
+    _press(eng, *corner)
+    ws, hs, anchors = [], [], []
+    held = []          # (w, h, anchor) samples while the mouse is held
+    steps = 6
+    for i in range(1, steps + 1):
+        t = i / steps
+        _motion(eng, corner[0] + (target[0] - corner[0]) * t,
+                corner[1] + (target[1] - corner[1]) * t)
+        ws.append(sp.w)
+        hs.append(sp.h)
+        anchors.append(sp.handle_points()["top_left"])
+    # hold: same mouse point, several extra motion events
+    for _ in range(4):
+        _motion(eng, *target)
+        ws.append(sp.w)
+        hs.append(sp.h)
+        anchors.append(sp.handle_points()["top_left"])
+        held.append((sp.w, sp.h, sp.handle_points()["top_left"]))
+    _release(eng, *target)
+    # stability is only meaningful while the mouse does not move: repeated
+    # motion events at the same point must not change the size at all
+    held_w = [s[0] for s in held]
+    held_h = [s[1] for s in held]
+    ok_size = (max(held_w) - min(held_w) <= 1.0 and
+               max(held_h) - min(held_h) <= 1.0)
+    drift = max(math.hypot(p[0] - anchor0[0], p[1] - anchor0[1])
+                for p in anchors)
+    ok_anchor = drift <= 2.0
+    ok_growth = ws[-1] > 200      # the gesture actually resized the sprite
+    eng.stage.active.remove_sprite(sp)
+    eng.selected_sprites = []
+    return _report("rotated resize anti-jitter (45 deg)", [
+        ("size stable at a held point", ok_size),
+        ("anchor does not drift", ok_anchor),
+        ("gesture resized the sprite", ok_growth),
+    ])
+
+
+def test_flip_buttons_follow_bottom(eng):
+    """Flip H/V buttons are anchored to the sprite's CURRENT bottom edge
+    (rotated), not to the angle-0 AABB."""
+    surf = pygame.Surface((200, 100), pygame.SRCALPHA)
+    surf.fill((60, 200, 120, 255))
+    x0, y0 = (int(v) for v in eng.view.s2w(300, 400))
+    sp = Sprite("btns", surf, x0, y0, angle=90.0)
+    eng.stage.active.add_sprite(sp)
+    eng.selected_sprites = [sp]
+
+    # expected: under the rotated bottom-edge midpoint
+    bx, by = sp.handle_points()["bottom"]
+    esx, esy = eng.view.w2s(bx, by)
+    btn_h, btn_v = eng._flip_buttons(sp)
+    mid_x = (btn_h.left + btn_v.right) / 2.0
+    ok_pos = abs(mid_x - esx) <= 2.0 and abs(btn_h.centery - (esy + 19)) <= 2.0
+
+    # at 90 deg the local bottom sits on the RIGHT side, far from the
+    # angle-0 AABB bottom position -> the buttons must have moved
+    flat = Sprite("btns0", surf, x0, y0)
+    a_sx, a_sy = eng.view.w2s(*flat.handle_points()["bottom"])
+    r_sx, r_sy = eng.view.w2s(*sp.handle_points()["bottom"])
+    moved = math.hypot(r_sx - a_sx, r_sy - a_sy) > 20.0
+
+    # clicking the button still toggles the flip
+    cx, cy = btn_h.center
+    ev = pygame.event.Event(pygame.MOUSEBUTTONDOWN, pos=(int(cx), int(cy)),
+                            button=1)
+    eng.handle_event(ev, (int(cx), int(cy)))
+    ok_click = sp.flip_x is True
+    eng.stage.active.remove_sprite(sp)
+    eng.selected_sprites = []
+    return _report("flip buttons follow rotated bottom edge", [
+        ("anchored under rotated bottom", ok_pos),
+        ("moves with the rotation", moved),
+        ("button click toggles flip", ok_click),
+    ])
+
+
 def test_project_roundtrip(eng):
     """angle survives save_project -> load_project."""
     hero = _ensure_hero(eng)
@@ -209,6 +374,9 @@ def main():
         test_contains_and_handles(),
         test_single_rotation(eng),
         test_group_rotation(eng),
+        test_rotated_resize(eng),
+        test_resize_no_jitter(eng),
+        test_flip_buttons_follow_bottom(eng),
         test_project_roundtrip(eng),
     ]
     pygame.quit()
